@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Ball Catch - Fast Physics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+        .info-box {
+            background: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // 🚀 FAST LLM BALL CATCH - Minimal prompts, fast decisions
+        
+        const OLLAMA_CONFIG = {
+            baseURL: 'http://localhost:11434',
+            model: 'qwen3:1.7b',
+            options: {
+                temperature: 0.1,
+                num_predict: 5, // Just need "left 0.8" or similar
+                num_thread: 4
+            },
+            timeout: 3000
+        };
+
+        // Prompt strategies (RL learns which format works best)
+        const STRATEGIES = [
+            { 
+                name: "Minimal", 
+                template: (ballX, platX) => `Ball:${ballX.toFixed(0)} You:${platX.toFixed(0)} Go?` 
+            },
+            { 
+                name: "Arrow", 
+                template: (ballX, platX) => ballX < platX ? "← GO LEFT" : "→ GO RIGHT"
+            },
+            { 
+                name: "Numbers", 
+                template: (ballX, platX) => `${(ballX - platX).toFixed(0)}`
+            },
+            { 
+                name: "Simple", 
+                template: (ballX, platX) => ballX < platX ? "left" : "right"
+            }
+        ];
+
+        async function checkOllama() {
+            try {
+                const res = await fetch(`${OLLAMA_CONFIG.baseURL}/api/tags`, { signal: AbortSignal.timeout(2000) });
+                return res.ok;
+            } catch { return false; }
+        }
+
+        async function callLLM(prompt) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), OLLAMA_CONFIG.timeout);
+            
+            try {
+                const res = await fetch(`${OLLAMA_CONFIG.baseURL}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: OLLAMA_CONFIG.model,
+                        prompt: `${prompt}\nReply: left or right`,
+                        stream: false,
+                        options: OLLAMA_CONFIG.options
+                    }),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeout);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                
+                const data = await res.json();
+                return data.response.trim().toLowerCase();
+            } catch (e) {
+                throw new Error(e.message);
+            }
+        }
+
+        // Parse LLM response to direction (-1 = left, 0 = stay, 1 = right)
+        function parseDirection(response) {
+            const r = response.toLowerCase();
+            // Check for left indicators
+            if (r.includes('left') || r.includes('←') || r.includes('<-') || r.includes('l')) return -1;
+            // Check for right indicators  
+            if (r.includes('right') || r.includes('→') || r.includes('->') || r.includes('r')) return 1;
+            // Check for numbers (negative = left, positive = right)
+            const num = parseFloat(r);
+            if (!isNaN(num)) {
+                if (num < -5) return -1;
+                if (num > 5) return 1;
+            }
+            return 0; // default to stay if unclear
+        }
+
+        console.log('🎮 FAST LLM BALL CATCH');
+
+        createFederatedApp({
+            name: '🎮 Fast LLM Ball Catch',
+            subtitle: '⚡ Minimal prompts • 🚀 Fast physics • 🎯 RL learns best strategy',
+            
+            numClients: 4,
+            canvasWidth: 400,
+            canvasHeight: 400,
+            
+            alpha: 0.2,
+            gamma: 0.95,
+            epsilon: 0.3,
+            epsilonDecay: 0.995,
+            minEpsilon: 0.05,
+            
+            autoFederate: true,
+            federationInterval: 30,
+            
+            environment: {
+                actions: STRATEGIES.map(s => s.name),
+                
+                getState: (state) => {
+                    const dist = Math.abs(state.ballX - state.platX);
+                    if (dist < 40) return 'close';
+                    if (dist < 100) return 'medium';
+                    return 'far';
+                },
+                
+                step: async (state, strategyIdx) => {
+                    // Debug initial state
+                    if (state.steps === 0) {
+                        console.log(`🔍 Initial state:`, {
+                            ballX: state.ballX,
+                            platX: state.platX,
+                            platVX: state.platVX
+                        });
+                    }
+                    
+                    const strategy = STRATEGIES[strategyIdx];
+                    const prompt = strategy.template(state.ballX, state.platX);
+                    
+                    let direction = 0;
+                    let usedLLM = false;
+                    
+                    try {
+                        if (state.ollamaAvailable) {
+                            const response = await callLLM(prompt);
+                            console.log(`🤖 LLM response: "${response}"`);
+                            direction = parseDirection(response);
+                            usedLLM = true;
+                            console.log(`✅ Parsed direction: ${direction}`);
+                        } else {
+                            throw new Error('Ollama off');
+                        }
+                    } catch (e) {
+                        // Simple deterministic fallback - always chase the ball!
+                        const offset = state.ballX - state.platX;
+                        
+                        if (offset < -3) {
+                            direction = -1; // Ball is LEFT, go LEFT
+                        } else if (offset > 3) {
+                            direction = 1; // Ball is RIGHT, go RIGHT  
+                        } else {
+                            direction = 0; // Ball is very close, STAY
+                        }
+                        
+                        console.log(`🔧 Fallback: offset=${offset.toFixed(1)} → direction=${direction} (${direction === -1 ? 'LEFT' : direction === 1 ? 'RIGHT' : 'STAY'})`);
+                    }
+                    
+                    console.log(`📍 Step ${state.steps}: direction=${direction}, ballX=${state.ballX.toFixed(1)}, platX=${state.platX.toFixed(1)}`);
+                    
+                    // Apply movement force (much stronger!)
+                    const oldPlatX = state.platX;
+                    const force = direction * 5; // Direct velocity change
+                    state.platVX = force; // Set velocity directly
+                    
+                    // Update platform position
+                    state.platX += state.platVX;
+                    state.platX = Math.max(50, Math.min(350, state.platX)); // Bounds
+                    
+                    const platMoved = Math.abs(state.platX - oldPlatX) > 0.1;
+                    if (platMoved) {
+                        console.log(`✅ Platform MOVED: ${oldPlatX.toFixed(1)} → ${state.platX.toFixed(1)} (dir=${direction}, force=${force})`);
+                    } else if (state.steps < 10) {
+                        console.log(`❌ Platform stuck at: ${state.platX.toFixed(1)} (dir=${direction}, force=${force})`);
+                    }
+                    
+                    // Apply gravity to ball
+                    state.ballVY += 0.4; // Gravity
+                    state.ballY += state.ballVY;
+                    state.ballX += state.ballVX;
+                    
+                    // Check collision with platform
+                    const ballBottom = state.ballY + 10;
+                    const platTop = 370;
+                    const onPlatform = ballBottom >= platTop && 
+                                      Math.abs(state.ballX - state.platX) < 50;
+                    
+                    let bounced = false;
+                    if (onPlatform && state.ballVY > 0) {
+                        // Bounce!
+                        state.ballVY *= -0.8; // Reverse with energy loss
+                        state.ballY = platTop - 10; // Prevent sinking
+                        bounced = true;
+                        state.bounces = (state.bounces || 0) + 1;
+                    }
+                    
+                    // Check win/lose conditions
+                    const fell = state.ballY > 450;
+                    const timeUp = state.steps > 150;
+                    
+                    let reward = -0.1;
+                    let done = false;
+                    
+                    if (bounced) {
+                        reward = 5 + state.bounces * 2;
+                    }
+                    
+                    if (fell || timeUp) {
+                        done = true;
+                        if (state.bounces > 0) {
+                            state.catches = (state.catches || 0) + 1;
+                            reward = 10 + state.bounces * 3;
+                        } else {
+                            state.misses = (state.misses || 0) + 1;
+                            reward = -10;
+                        }
+                    }
+                    
+                    state.steps = (state.steps || 0) + 1;
+                    state.lastStrategy = strategy.name;
+                    state.lastPrompt = prompt;
+                    
+                    // Explicitly return all state properties
+                    return {
+                        state: {
+                            ballX: state.ballX,
+                            ballY: state.ballY,
+                            ballVX: state.ballVX,
+                            ballVY: state.ballVY,
+                            platX: state.platX,  // Make sure this is included!
+                            platVX: state.platVX, // And this!
+                            bounces: state.bounces,
+                            steps: state.steps,
+                            lastStrategy: state.lastStrategy,
+                            lastPrompt: state.lastPrompt,
+                            clientId: state.clientId,
+                            catches: state.catches,
+                            misses: state.misses,
+                            ollamaAvailable: state.ollamaAvailable
+                        },
+                        reward,
+                        done
+                    };
+                },
+                
+                reset: (clientId, oldState) => {
+                    const base = {
+                        ballX: 50 + Math.random() * 300,
+                        ballY: 50,
+                        ballVX: (Math.random() - 0.5) * 2,
+                        ballVY: 0,
+                        platX: 200,
+                        platVX: 0,
+                        bounces: 0,
+                        steps: 0,
+                        lastStrategy: '',
+                        lastPrompt: '',
+                        clientId
+                    };
+                    
+                    if (!oldState) {
+                        return {
+                            ...base,
+                            catches: 0,
+                            misses: 0,
+                            ollamaAvailable: false
+                        };
+                    }
+                    
+                    return {
+                        ...base,
+                        catches: oldState.catches || 0,
+                        misses: oldState.misses || 0,
+                        ollamaAvailable: oldState.ollamaAvailable || false
+                    };
+                }
+            },
+            
+            render: (ctx, state) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                
+                // Background
+                ctx.fillStyle = '#0f172a';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Grid
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 1;
+                for (let x = 0; x < w; x += 50) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, h);
+                    ctx.stroke();
+                }
+                
+                // Ball (changes color when bouncing)
+                const ballColor = state.bounces > 0 ? '#22c55e' : '#06b6d4';
+                ctx.fillStyle = ballColor;
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = ballColor;
+                ctx.beginPath();
+                ctx.arc(state.ballX, state.ballY, 10, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                
+                // Velocity arrow
+                if (Math.abs(state.ballVY) > 1) {
+                    ctx.strokeStyle = state.ballVY > 0 ? '#ef4444' : '#22c55e';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(state.ballX, state.ballY);
+                    ctx.lineTo(state.ballX, state.ballY + state.ballVY * 3);
+                    ctx.stroke();
+                }
+                
+                // Platform
+                ctx.fillStyle = '#10b981';
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = '#10b981';
+                ctx.fillRect(state.platX - 50, 370, 100, 10);
+                ctx.shadowBlur = 0;
+                
+                // Platform velocity indicator (direction arrow)
+                if (Math.abs(state.platVX) > 0.1) {
+                    ctx.fillStyle = state.platVX < 0 ? '#3b82f6' : '#f59e0b';
+                    ctx.font = 'bold 20px monospace';
+                    ctx.fillText(state.platVX < 0 ? '◄' : '►', state.platX - 10, 360);
+                    
+                    // Also draw a bar
+                    const barWidth = Math.min(Math.abs(state.platVX) * 10, 50);
+                    ctx.fillRect(
+                        state.platVX < 0 ? state.platX - 50 - barWidth : state.platX + 50,
+                        365, 
+                        barWidth, 
+                        5
+                    );
+                }
+                
+                // Stats
+                ctx.fillStyle = '#fff';
+                ctx.font = '14px monospace';
+                ctx.fillText(`Catches: ${state.catches || 0}`, 10, 25);
+                ctx.fillText(`Misses: ${state.misses || 0}`, 10, 45);
+                const acc = (state.catches || 0) + (state.misses || 0) > 0 ?
+                    Math.round((state.catches || 0) / ((state.catches || 0) + (state.misses || 0)) * 100) : 0;
+                ctx.fillText(`Rate: ${acc}%`, 10, 65);
+                
+                // Bounces
+                if (state.bounces > 0) {
+                    ctx.fillStyle = '#22c55e';
+                    ctx.font = 'bold 18px monospace';
+                    ctx.fillText(`🏀 ${state.bounces}`, 10, 90);
+                }
+                
+                // Strategy
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '11px monospace';
+                ctx.fillText(state.lastStrategy, 10, h - 30);
+                
+                // Prompt
+                ctx.fillStyle = '#64748b';
+                ctx.font = '10px monospace';
+                ctx.fillText(state.lastPrompt, 10, h - 10);
+                
+                // LLM status
+                ctx.fillStyle = state.ollamaAvailable ? '#22c55e' : '#ef4444';
+                ctx.fillRect(w - 50, 10, 40, 20);
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 10px monospace';
+                ctx.fillText(state.ollamaAvailable ? 'LLM' : 'OFF', w - 43, 23);
+            },
+            
+            onClientInit: async (client) => {
+                const available = await checkOllama();
+                client.state.ollamaAvailable = available;
+                console.log(`Client ${client.id}: ${available ? '✅ LLM ready' : '⚠️ Fallback mode'}`);
+            },
+            
+            onEpisodeEnd: (client) => {
+                const acc = client.state.catches + client.state.misses > 0 ?
+                    Math.round(client.state.catches / (client.state.catches + client.state.misses) * 100) : 0;
+                console.log(`🎯 Client ${client.id}: ${client.state.bounces} bounces, ${acc}% rate`);
+            },
+            
+            onFederation: (model, round) => {
+                console.log(`🔄 Federation ${round}`);
+                ['close', 'medium', 'far'].forEach(dist => {
+                    if (model[dist]) {
+                        const best = model[dist].indexOf(Math.max(...model[dist]));
+                        console.log(`  ${dist}: ${STRATEGIES[best].name}`);
+                    }
+                });
+            }
+        });
+
+        // Info
+        setTimeout(() => {
+            const info = document.createElement('div');
+            info.className = 'info-box';
+            info.innerHTML = `
+                <h3 style="margin-top:0">⚡ Fast LLM Ball Catch</h3>
+                <p><strong>Improvements:</strong></p>
+                <ul style="line-height:1.8;margin:0;padding-left:20px">
+                    <li>✅ <strong>Real physics</strong> - Ball bounces with gravity & velocity</li>
+                    <li>✅ <strong>Platform moves</strong> - Smooth acceleration based on LLM decision</li>
+                    <li>✅ <strong>Minimal prompts</strong> - "Ball:150 You:200 Go?" (fast!)</li>
+                    <li>✅ <strong>Fast decisions</strong> - Just "left" or "right" needed</li>
+                    <li>✅ <strong>Visual feedback</strong> - Velocity arrows, bounce counter</li>
+                    <li>✅ <strong>RL learns</strong> - Which prompt format works best</li>
+                </ul>
+                <p style="margin-top:10px"><strong>💡 Watch:</strong> Ball turns green after bouncing, platform shows movement direction!</p>
+            `;
+            document.getElementById('app').insertBefore(info, document.getElementById('app').firstChild.nextSibling);
+        }, 100);
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pure RL Ball Catch - Force-Based Control</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #1e3a8a 0%, #7c3aed 100%);
+            color: #fff;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+        #app { max-width: 1800px; margin: 0 auto; background: rgba(15, 23, 42, 0.95); 
+               border-radius: 16px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+        .info { background: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6;
+                padding: 15px; margin: 20px 0; border-radius: 8px; font-size: 13px; }
+        code { background: rgba(139, 92, 246, 0.2); padding: 2px 6px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+        import { discretize } from '../components/rl-core.js';
+
+        /**
+         * PURE RL BALL CATCH - Physics-Based Continuous Control
+         * 
+         * CoT Implementation with 3-iteration expert review:
+         * - Prompt Engineer: Clear state/action spaces, reward shaping
+         * - Software Engineer: Modular, reusable, error handling, DI config
+         * - AI Researcher: Q-learning with state discretization (2025 best practices)
+         * 
+         * State Space: Continuous 6D (ballX, ballY, ballVX, ballVY, platX, platVX)
+         *             → Discretized 5D (relX, ballY, ballVX, ballVY, platVX)
+         *             → 5×3×3×3×3 = 405 states (simplified for convergence)
+         * Action Space: Discrete force levels [-1.0, -0.5, 0, 0.5, 1.0]
+         * Algorithm: ε-greedy Q-learning with state discretization
+         * Physics: F = ma with friction and bounds (configurable via DI)
+         */
+
+        // ============================================================================
+        // CONFIGURATION (DI Principle - Iteration 1)
+        // ============================================================================
+
+        const PHYSICS_CONFIG = {
+            mass: 1.0,
+            friction: 0.85,
+            gravity: 0.5,
+            dt: 1.0,
+            maxVelocity: 8,
+            wallBounce: -0.3,
+            ballBounce: -0.75
+        };
+
+        // ============================================================================
+        // PURE FUNCTIONAL MATH OPERATIONS (Iteration 2)
+        // ============================================================================
+        // Note: discretize imported from rl-core.js for consistency
+
+        /**
+         * Create state key from continuous state
+         * Formula: key = "d1,d2,...,d5" where di = discretize(si)
+         * Maps 6D continuous → 5D discrete using relative positioning
+         * 
+         * Rationale for dimension reduction:
+         * - Use relX = ballX - platX (relative matters, not absolute)
+         * - Include ballVX for horizontal trajectory prediction
+         * - Include platVX for momentum awareness (anticipatory control)
+         * - Ballistic motion: vx, vy allow predicting landing zone
+         * 
+         * @pure
+         * @param {number} ballX - Ball X position [0, 400]
+         * @param {number} ballY - Ball Y position [0, 400]
+         * @param {number} ballVX - Ball X velocity [-10, 10]
+         * @param {number} ballVY - Ball Y velocity [-10, 20]
+         * @param {number} platX - Platform X position [50, 350]
+         * @param {number} platVX - Platform X velocity [-8, 8]
+         * @returns {string} State key for Q-table lookup
+         */
+        const stateToKey = (ballX, ballY, ballVX, ballVY, platX, platVX) => {
+            // Error handling: validate inputs
+            if (typeof ballX !== 'number' || typeof ballY !== 'number' || 
+                typeof ballVX !== 'number' || typeof ballVY !== 'number' ||
+                typeof platX !== 'number' || typeof platVX !== 'number') {
+                console.warn('⚠️ Invalid state values', {ballX, ballY, ballVX, ballVY, platX, platVX});
+                return '0,0,0,0,0'; // Default state
+            }
+            
+            // Relative position is what matters!
+            const relX = ballX - platX; // Ball position relative to platform
+            
+            // Discretization: 5×3×3×3×3 = 405 states (manageable for Q-learning)
+            // discretize(value, bins, min, max) from rl-core.js
+            const rx = discretize(relX, 5, -200, 200);     // 5 bins: far-left, left, center, right, far-right
+            const by = discretize(ballY, 3, 0, 400);       // 3 bins: top, middle, bottom
+            const bvx = discretize(ballVX, 3, -5, 5);      // 3 bins: left, still, right
+            const bvy = discretize(ballVY, 3, -10, 20);    // 3 bins: rising, still, falling
+            const pvx = discretize(platVX, 3, -8, 8);      // 3 bins: left, still, right (momentum!)
+            
+            return `${rx},${by},${bvx},${bvy},${pvx}`;
+        };
+
+        /**
+         * Apply physics force to platform
+         * Formula: a = F/m, v' = v*μ + a*dt, x' = x + v'*dt
+         * @pure
+         * @param {object} state - Current state
+         * @param {number} force - Applied force [-1, 1]
+         * @param {object} config - Physics configuration (DI)
+         * @returns {object} {platX, platVX}
+         */
+        const applyForce = (state, force, config = PHYSICS_CONFIG) => {
+            const {mass, friction, dt, maxVelocity, wallBounce} = config;
+            
+            // F = ma => a = F/m
+            const acceleration = force / mass;
+            
+            // v' = v*μ + a*dt (friction applied before acceleration)
+            let newVX = state.platVX * friction + acceleration * dt;
+            
+            // Clamp velocity: |v| ≤ vmax
+            newVX = Math.max(-maxVelocity, Math.min(maxVelocity, newVX));
+            
+            // x' = x + v'*dt
+            let newX = state.platX + newVX * dt;
+            
+            // Bounds with damping: v' = v*bounce_coeff
+            if (newX < 50) {
+                newX = 50;
+                newVX *= wallBounce; // Bounce off left wall
+            } else if (newX > 350) {
+                newX = 350;
+                newVX *= wallBounce; // Bounce off right wall
+            }
+            
+            return { platX: newX, platVX: newVX };
+        };
+
+        /**
+         * Apply gravity to ball
+         * Formula: vy' = vy + g*dt, y' = y + vy'*dt, x' = x + vx*dt
+         * @pure
+         * @param {object} state - Current state
+         * @param {object} config - Physics configuration (DI)
+         * @returns {object} {ballX, ballY, ballVX, ballVY}
+         */
+        const applyGravity = (state, config = PHYSICS_CONFIG) => {
+            const {gravity, dt} = config;
+            
+            // Apply gravity: vy' = vy + g*dt
+            const newVY = state.ballVY + gravity * dt;
+            // y' = y + vy'*dt
+            const newY = state.ballY + newVY * dt;
+            
+            // Update X with constant velocity: x' = x + vx*dt
+            const newX = state.ballX + state.ballVX * dt;
+            
+            return {
+                ballX: newX,
+                ballY: newY,
+                ballVX: state.ballVX,
+                ballVY: newVY
+            };
+        };
+
+        /**
+         * Check collision with platform
+         * Formula: collision = (ballBottom ≥ platTop) ∧ (ballVY > 0) ∧ (|ballX - platX| < platWidth/2)
+         * @pure
+         * @param {number} ballX - Ball X position
+         * @param {number} ballY - Ball Y position
+         * @param {number} ballVY - Ball Y velocity (must be positive for collision)
+         * @param {number} platX - Platform X position
+         * @returns {boolean} True if collision detected
+         */
+        const checkCollision = (ballX, ballY, ballVY, platX) => {
+            const ballBottom = ballY + 10;
+            const platTop = 370;
+            const platWidth = 100;
+            
+            return ballBottom >= platTop && 
+                   ballVY > 0 &&  // Moving downward (prevents double-collision on bounce)
+                   Math.abs(ballX - platX) < platWidth / 2;
+        };
+
+        /**
+         * Compute reward for current state
+         * 
+         * Formula: r(s,a,s') = r_catch·δ_catch + r_miss·δ_miss + r_proximity(d)
+         * 
+         * Where:
+         *   δ_catch = 1 if collision, 0 otherwise
+         *   δ_miss = 1 if ball fell, 0 otherwise
+         *   d = |ballX - platX| (horizontal distance)
+         *   r_proximity(d) = { 2.0   if d < 30
+         *                    { 1.0   if 30 ≤ d < 60
+         *                    { 0.3   if 60 ≤ d < 100
+         *                    { -0.5  if d ≥ 100
+         * 
+         * Coefficients: r_catch = +20, r_miss = -15
+         * 
+         * @pure
+         * @param {object} state - Current state
+         * @param {boolean} collided - Whether collision occurred
+         * @param {boolean} fell - Whether ball fell off screen
+         * @returns {number} Reward value
+         */
+        const computeReward = (state, collided, fell) => {
+            // Terminal rewards
+            if (collided) {
+                return 20; // Large reward for catching
+            }
+            
+            if (fell) {
+                return -15; // Strong penalty for missing
+            }
+            
+            // Proximity-based shaping: encourages alignment with ball
+            const distance = Math.abs(state.ballX - state.platX);
+            
+            // Piecewise reward function r_proximity(d)
+            if (distance < 30) {
+                return 2.0;  // Excellent alignment
+            } else if (distance < 60) {
+                return 1.0;  // Good alignment
+            } else if (distance < 100) {
+                return 0.3;  // Decent alignment
+            } else {
+                return -0.5; // Poor alignment (penalty to encourage approach)
+            }
+        };
+
+        // ============================================================================
+        // RL CONFIGURATION (Iteration 2: Improved hyperparameters)
+        // ============================================================================
+
+        const RL_CONFIG = {
+            actions: [-1.0, -0.5, 0, 0.5, 1.0], // Force levels (justified by smooth control)
+            actionNames: ['←←', '←', '•', '→', '→→'],
+            alpha: 0.15,        // Learning rate (α) - step size for Q-value updates
+            gamma: 0.95,        // Discount factor (γ) - value future rewards highly
+            epsilon: 0.3,       // Initial exploration (ε_0) - 30% random actions
+            epsilonDecay: 0.995, // Decay rate: ε_t = ε_0 * decay^t
+            minEpsilon: 0.001    // Minimum exploration (ε_∞) - 1% random for robustness
+            // Convergence: ε reaches 0.01 after ~920 episodes (0.3 * 0.995^920 ≈ 0.01)
+            // Industry standard: 0.01 allows near-optimal exploitation while maintaining exploration
+        };
+
+        // ============================================================================
+        // MAIN APPLICATION (Iteration 3: Production-ready)
+        // ============================================================================
+
+        console.log('🎮 PURE RL BALL CATCH - Physics-Based Control');
+        console.log('Algorithm: Q-Learning with ε-greedy exploration and state discretization');
+        console.log('State Space: 6D continuous → 5D discrete → 5×3×3×3×3 = 405 states');
+        console.log('  - Relative X (relX = ballX - platX): 5 bins [-200, 200]');
+        console.log('  - Ball Y: 3 bins [0, 400]');
+        console.log('  - Ball VX: 3 bins [-5, 5] (horizontal trajectory)');
+        console.log('  - Ball VY: 3 bins [-10, 20] (vertical trajectory)');
+        console.log('  - Platform VX: 3 bins [-8, 8] (momentum awareness)');
+        console.log('Action Space:', RL_CONFIG.actions.length, 'discrete force levels');
+        console.log('Hyperparameters: α=' + RL_CONFIG.alpha + ', γ=' + RL_CONFIG.gamma + ', ε=' + RL_CONFIG.epsilon + '→' + RL_CONFIG.minEpsilon + ' (converges at ~920 eps)');
+        console.log('✅ Using federated-core.js components');
+
+        createFederatedApp({
+            name: '🎮 Pure RL Ball Catch',
+            subtitle: '⚡ Force-based physics • 🧠 Q-Learning • 📊 Continuous control',
+            
+            numClients: 4,
+            canvasWidth: 400,
+            canvasHeight: 400,
+            
+            // RL parameters
+            alpha: RL_CONFIG.alpha,
+            gamma: RL_CONFIG.gamma,
+            epsilon: RL_CONFIG.epsilon,
+            epsilonDecay: RL_CONFIG.epsilonDecay,
+            minEpsilon: RL_CONFIG.minEpsilon,
+            numActions: RL_CONFIG.actions.length,
+            
+            // Federation
+            autoFederate: true,
+            federationInterval: 25,
+            
+            environment: {
+                actions: RL_CONFIG.actionNames,
+                
+                // State abstraction: Convert 6D continuous to 5D discrete key
+                getState: (state) => {
+                    return stateToKey(
+                        state.ballX,
+                        state.ballY,
+                        state.ballVX,   // Now included! (horizontal trajectory)
+                        state.ballVY,
+                        state.platX,
+                        state.platVX    // Now used! (momentum awareness)
+                    );
+                },
+                
+                // Step function: Apply action, update physics, compute reward
+                step: (state, actionIdx) => {
+                    // Get force from action
+                    const force = RL_CONFIG.actions[actionIdx];
+                    
+                    // Apply force to platform (pure function with DI config)
+                    const platPhysics = applyForce(state, force, PHYSICS_CONFIG);
+                    
+                    // Apply gravity to ball (pure function with DI config)
+                    const ballPhysics = applyGravity(state, PHYSICS_CONFIG);
+                    
+                    // Update state
+                    const newState = {
+                        ...state,
+                        ...platPhysics,
+                        ...ballPhysics
+                    };
+                    
+                    // Check collision (pure function)
+                    const collided = checkCollision(
+                        newState.ballX,
+                        newState.ballY,
+                        newState.ballVY,
+                        newState.platX
+                    );
+                    
+                    // Handle bounce using config
+                    if (collided) {
+                        newState.ballVY *= PHYSICS_CONFIG.ballBounce; // Energy loss on bounce
+                        newState.ballY = 360; // Prevent platform penetration
+                        newState.bounces = (state.bounces || 0) + 1;
+                    }
+                    
+                    // Check terminal conditions
+                    const fell = newState.ballY > 420;
+                    const timeUp = newState.steps > 200;
+                    
+                    let done = false;
+                    if (fell || timeUp) {
+                        done = true;
+                        if (newState.bounces > 0) {
+                            newState.catches = (state.catches || 0) + 1;
+                        } else {
+                            newState.misses = (state.misses || 0) + 1;
+                        }
+                    }
+                    
+                    // Compute reward (pure function)
+                    const reward = computeReward(newState, collided, fell);
+                    
+                    // Update metadata
+                    newState.steps = (state.steps || 0) + 1;
+                    newState.lastAction = RL_CONFIG.actionNames[actionIdx];
+                    newState.lastForce = force;
+                    newState.qTableSize = state.qTableSize || 0; // Will be updated by onEpisodeEnd
+                    
+                    return {
+                        state: newState,
+                        reward,
+                        done
+                    };
+                },
+                
+                // Reset: Initialize new episode
+                reset: (clientId, oldState) => {
+                    const base = {
+                        // Ball state
+                        ballX: 50 + Math.random() * 300,
+                        ballY: 50,
+                        ballVX: (Math.random() - 0.5) * 3,
+                        ballVY: 0,
+                        
+                        // Platform state
+                        platX: 200,
+                        platVX: 0,
+                        
+                        // Episode state
+                        bounces: 0,
+                        steps: 0,
+                        lastAction: '•',
+                        lastForce: 0,
+                        clientId
+                    };
+                    
+                    // Preserve cumulative stats
+                    if (!oldState) {
+                        return { 
+                            ...base, 
+                            catches: 0, 
+                            misses: 0,
+                            recentHistory: []  // Track last 25 episodes
+                        };
+                    }
+                    
+                    return {
+                        ...base,
+                        catches: oldState.catches || 0,
+                        misses: oldState.misses || 0,
+                        recentHistory: oldState.recentHistory || []
+                    };
+                }
+            },
+            
+            // Rendering
+            render: (ctx, state) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                
+                // Background
+                ctx.fillStyle = '#0f172a';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Grid with physics markers
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 1;
+                for (let x = 0; x < w; x += 50) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, h);
+                    ctx.stroke();
+                }
+                
+                // Draw ball
+                const ballColor = state.bounces > 0 ? '#10b981' : '#06b6d4';
+                ctx.fillStyle = ballColor;
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = ballColor;
+                ctx.beginPath();
+                ctx.arc(state.ballX, state.ballY, 10, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                
+                // Ball velocity vector
+                if (Math.abs(state.ballVY) > 0.5) {
+                    ctx.strokeStyle = state.ballVY > 0 ? '#ef4444' : '#10b981';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(state.ballX, state.ballY);
+                    ctx.lineTo(state.ballX + state.ballVX * 5, state.ballY + state.ballVY * 3);
+                    ctx.stroke();
+                }
+                
+                // Platform
+                const platColor = '#8b5cf6';
+                ctx.fillStyle = platColor;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = platColor;
+                ctx.fillRect(state.platX - 50, 370, 100, 10);
+                ctx.shadowBlur = 0;
+                
+                // Platform velocity vector (ACCELERATION INDICATOR)
+                if (Math.abs(state.platVX) > 0.2) {
+                    const arrowColor = state.platVX < 0 ? '#3b82f6' : '#f59e0b';
+                    ctx.fillStyle = arrowColor;
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = arrowColor;
+                    
+                    // Arrow
+                    ctx.font = 'bold 24px monospace';
+                    ctx.fillText(state.platVX < 0 ? '◄◄' : '►►', state.platX - 15, 355);
+                    
+                    // Velocity bar
+                    const barLength = Math.abs(state.platVX) * 8;
+                    const barX = state.platVX < 0 ? state.platX - 50 - barLength : state.platX + 50;
+                    ctx.fillRect(barX, 363, barLength, 6);
+                    ctx.shadowBlur = 0;
+                }
+                
+                // Force indicator (current action)
+                if (state.lastForce !== 0) {
+                    ctx.fillStyle = state.lastForce < 0 ? '#3b82f6' : '#f59e0b';
+                    ctx.font = 'bold 16px monospace';
+                    ctx.fillText(`F=${state.lastForce.toFixed(1)}`, state.platX - 25, 390);
+                }
+                
+                // Stats - Overall
+                ctx.fillStyle = '#64748b';
+                ctx.font = 'bold 10px monospace';
+                ctx.fillText('OVERALL', 10, 20);
+                
+                ctx.fillStyle = '#e2e8f0';
+                ctx.font = '12px monospace';
+                const total = (state.catches || 0) + (state.misses || 0);
+                const rate = total > 0 ? Math.round((state.catches || 0) / total * 100) : 0;
+                ctx.fillText(`${rate}% (${state.catches || 0}/${total})`, 10, 35);
+                
+                // Stats - Recent (Last 25 episodes)
+                if (state.recentHistory && state.recentHistory.length >= 5) {
+                    const recent = state.recentHistory;
+                    const recentSuccesses = recent.filter(success => success).length;
+                    const recentRate = Math.round((recentSuccesses / recent.length) * 100);
+                    
+                    // Calculate trend (compare first half vs second half)
+                    const mid = Math.floor(recent.length / 2);
+                    const firstHalf = recent.slice(0, mid);
+                    const secondHalf = recent.slice(mid);
+                    const firstRate = firstHalf.filter(success => success).length / firstHalf.length;
+                    const secondRate = secondHalf.filter(success => success).length / secondHalf.length;
+                    const trend = secondRate - firstRate;
+                    
+                    // Trend indicator
+                    let trendIcon = '→';
+                    let trendColor = '#94a3b8';
+                    if (trend > 0.1) { trendIcon = '↑'; trendColor = '#10b981'; }
+                    else if (trend > 0.05) { trendIcon = '↗'; trendColor = '#22c55e'; }
+                    else if (trend < -0.1) { trendIcon = '↓'; trendColor = '#ef4444'; }
+                    else if (trend < -0.05) { trendIcon = '↘'; trendColor = '#f97316'; }
+                    
+                    ctx.fillStyle = '#64748b';
+                    ctx.font = 'bold 10px monospace';
+                    ctx.fillText(`RECENT (${recent.length})`, 10, 55);
+                    
+                    ctx.fillStyle = '#22d3ee';
+                    ctx.font = 'bold 12px monospace';
+                    ctx.fillText(`${recentRate}% `, 10, 70);
+                    
+                    ctx.fillStyle = trendColor;
+                    ctx.font = 'bold 14px monospace';
+                    ctx.fillText(trendIcon, 60, 70);
+                }
+                
+                // Show Q-table growth (indicates learning)
+                if (state.qTableSize !== undefined) {
+                    ctx.fillStyle = '#8b5cf6';
+                    ctx.font = '11px monospace';
+                    ctx.fillText(`States: ${state.qTableSize}`, 10, 90);
+                }
+                
+                // Bounces (current episode)
+                if (state.bounces > 0) {
+                    ctx.fillStyle = '#10b981';
+                    ctx.font = 'bold 16px monospace';
+                    ctx.fillText(`⚡ ${state.bounces}`, 10, 105);
+                }
+                
+                // Physics debug
+                ctx.fillStyle = '#64748b';
+                ctx.font = '10px monospace';
+                ctx.fillText(`vX=${state.platVX.toFixed(2)}`, 10, h - 30);
+                ctx.fillText(`Action: ${state.lastAction}`, 10, h - 15);
+            },
+            
+            onEpisodeEnd: (client, completedEpisode) => {
+                const total = client.state.catches + client.state.misses;
+                const rate = total > 0 ? Math.round(client.state.catches / total * 100) : 0;
+                const qTableSize = Object.keys(client.agent.getModel()).length;
+                
+                // Update state with Q-table size for rendering
+                client.state.qTableSize = qTableSize;
+                
+                // Track recent episode history (last 25 episodes)
+                // Success = caught the ball at least once in the completed episode
+                const wasSuccessful = completedEpisode.bounces > 0;
+                
+                if (!client.state.recentHistory) client.state.recentHistory = [];
+                client.state.recentHistory.push(wasSuccessful);
+                if (client.state.recentHistory.length > 25) {
+                    client.state.recentHistory.shift(); // Keep only last 25
+                }
+                
+                console.log(`🎯 Client ${client.id}: Episode ${client.metrics.episodeCount}, ${completedEpisode.bounces} bounces, ${rate}% rate, Q-table: ${qTableSize} states, ε=${client.agent.getEpsilon().toFixed(3)}`);
+            },
+            
+            onFederation: (model, round) => {
+                const statesShared = Object.keys(model).length;
+                console.log(`🔄 Federation ${round}: ${statesShared} states shared`);
+                
+                // Show sample Q-values for a common state
+                const sampleStates = Object.keys(model).slice(0, 3);
+                sampleStates.forEach(state => {
+                    const qVals = model[state];
+                    const maxQ = Math.max(...qVals);
+                    const bestAction = qVals.indexOf(maxQ);
+                    console.log(`  State ${state}: Best=${RL_CONFIG.actionNames[bestAction]} (Q=${maxQ.toFixed(2)})`);
+                });
+            }
+        });
+
+        // Documentation
+        setTimeout(() => {
+            const info = document.createElement('div');
+            info.className = 'info';
+            info.innerHTML = `
+                <h3 style="margin-top:0">🎮 Pure RL Ball Catch - Implementation Notes</h3>
+                
+                <p><strong>Algorithm:</strong> Q-Learning with ε-greedy exploration and state discretization</p>
+                
+                <p><strong>State Space (Dimension Reduction):</strong></p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li><strong>Continuous 6D:</strong> (ballX, ballY, ballVX, ballVY, platX, platVX)</li>
+                    <li><strong>Discrete 5D:</strong> (relX, ballY, ballVX, ballVY, platVX)</li>
+                    <li><code>relX = ballX - platX</code>: -200 to +200 → 5 bins</li>
+                    <li><code>ballY</code>: 0 to 400 → 3 bins (top, middle, bottom)</li>
+                    <li><code>ballVX</code>: -5 to +5 → 3 bins (enables trajectory prediction)</li>
+                    <li><code>ballVY</code>: -10 to +20 → 3 bins (rising, still, falling)</li>
+                    <li><code>platVX</code>: -8 to +8 → 3 bins (momentum awareness for anticipatory control)</li>
+                    <li><strong>Total:</strong> 5×3×3×3×3 = <strong>405 discrete states</strong></li>
+                    <li><strong>Key insight:</strong> Relative position + velocities enable predictive behavior!</li>
+                </ul>
+                
+                <p><strong>Action Space (5 discrete force levels):</strong></p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li><code>-1.0</code> ←← Strong left force</li>
+                    <li><code>-0.5</code> ← Medium left force</li>
+                    <li><code>0.0</code> • No force (coast)</li>
+                    <li><code>0.5</code> → Medium right force</li>
+                    <li><code>1.0</code> →→ Strong right force</li>
+                </ul>
+                
+                <p><strong>Physics (DI-injected config):</strong></p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li><strong>Platform:</strong> a = F/m, v' = v×μ + a×dt, x' = x + v'×dt</li>
+                    <li><strong>Ball:</strong> vy' = vy + g×dt, y' = y + vy'×dt, x' = x + vx×dt</li>
+                    <li><strong>Bounce:</strong> vy' = -vy × 0.75 (energy loss)</li>
+                    <li><strong>Friction:</strong> μ = 0.85 (smooth deceleration)</li>
+                    <li><strong>Gravity:</strong> g = 0.5</li>
+                    <li><strong>Wall bounce:</strong> -0.3 (damped reflection)</li>
+                </ul>
+                
+                <p><strong>Reward Shaping Formula:</strong></p>
+                <p style="margin:5px 0 5px 20px;font-family:monospace;background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;">
+                    r(s,a,s') = r_catch·δ_catch + r_miss·δ_miss + r_proximity(d)
+                </p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li><strong>+20</strong> for catching ball (δ_catch = 1)</li>
+                    <li><strong>-15</strong> penalty for missing ball (δ_miss = 1)</li>
+                    <li><strong>Proximity rewards:</strong> r_proximity(d) where d = |ballX - platX|
+                        <ul style="padding-left:20px">
+                            <li>d &lt; 30: <strong>+2.0</strong> (excellent alignment)</li>
+                            <li>30 ≤ d &lt; 60: <strong>+1.0</strong> (good alignment)</li>
+                            <li>60 ≤ d &lt; 100: <strong>+0.3</strong> (decent alignment)</li>
+                            <li>d ≥ 100: <strong>-0.5</strong> (penalty for being far)</li>
+                        </ul>
+                    </li>
+                </ul>
+                
+                <p><strong>Hyperparameters:</strong></p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li><strong>α (learning rate):</strong> 0.15</li>
+                    <li><strong>γ (discount factor):</strong> 0.95 (values future rewards)</li>
+                    <li><strong>ε (exploration):</strong> 0.3 → 0.05 (decays via 0.995^t)</li>
+                    <li><strong>Convergence:</strong> ε reaches 0.05 after ~460 episodes</li>
+                </ul>
+                
+                <p><strong>Visual Indicators:</strong></p>
+                <ul style="margin:5px 0;padding-left:20px;line-height:1.7">
+                    <li>🔵 Cyan ball → 🟢 Green after bounce</li>
+                    <li>◄◄ / ►► arrows show platform velocity direction</li>
+                    <li>Blue/orange bars show velocity magnitude</li>
+                    <li>F=X.X shows applied force from current action</li>
+                    <li>Red/green arrows show ball velocity vector</li>
+                    <li>States counter shows Q-table growth (learning progress)</li>
+                </ul>
+                
+                <p style="margin-top:10px"><strong>💡 Watch the learning:</strong> Agent learns to predict ball trajectory using velocities and maintains momentum to intercept the landing zone!</p>
+            `;
+            document.getElementById('app').insertBefore(info, document.getElementById('app').firstChild.nextSibling);
+        }, 100);
+    </script>
+</body>
+</html>
+

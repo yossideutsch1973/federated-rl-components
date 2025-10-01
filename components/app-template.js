@@ -9,8 +9,11 @@
  */
 
 import { createTabularAgent } from './rl-core.js';
-import { createFederatedManager, serializeModel, deserializeModel } from './federated-core.js';
+import { createFederatedManager, serializeModel, deserializeModel, computeModelDelta } from './federated-core.js';
 import { createDashboardLayout, createClientGrid, createControlBar, createInput, createMetricsPanel, updateMetric, injectDefaultStyles } from './ui-builder.js';
+import { MODES, createModeSwitcher, updateVisibility } from './mode-switcher.js';
+import { createInferenceAgent, runEvaluation, createInferenceUI, createResultsPanel, updateResults } from './inference-mode.js';
+import { createPersistenceManager } from './model-persistence.js';
 
 // ============================================================================
 // FEDERATED RL APP TEMPLATE
@@ -90,17 +93,78 @@ export const createFederatedApp = (config) => {
         throw new Error(`Container #${containerId} not found`);
     }
 
-    // Create control bar
+    // Mode state
+    let currentMode = MODES.TRAINING;
+
+    // Toast notification system (non-blocking feedback)
+    const showToast = (title, message = '', duration = 3000) => {
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 2px solid #3b82f6;
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #fff;
+            font-family: monospace;
+            font-size: 13px;
+            z-index: 10000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            animation: slideIn 0.3s ease-out;
+        `;
+        toast.innerHTML = `
+            <div style="font-weight: bold; margin-bottom: 4px;">${title}</div>
+            ${message ? `<div style="color: #94a3b8; font-size: 11px;">${message}</div>` : ''}
+        `;
+        
+        // Add animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(400px); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(400px); opacity: 0; }
+            }
+        `;
+        if (!document.querySelector('#toast-animations')) {
+            style.id = 'toast-animations';
+            document.head.appendChild(style);
+        }
+        
+        document.body.appendChild(toast);
+        
+        setTimeout(() => {
+            toast.style.animation = 'slideOut 0.3s ease-out';
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    };
+
+    // Training controls container
+    const trainingControlsDiv = document.createElement('div');
+    trainingControlsDiv.id = 'training-controls';
+    layout.controls.appendChild(trainingControlsDiv);
+
+    // Inference controls container
+    const inferenceControlsDiv = document.createElement('div');
+    inferenceControlsDiv.id = 'inference-controls';
+    inferenceControlsDiv.style.display = 'none';
+    layout.controls.appendChild(inferenceControlsDiv);
+
+    // Create control bar (TRAINING MODE)
     const buttons = createControlBar({
-        container: layout.controls,
+        container: trainingControlsDiv,
         buttons: [
             { id: 'btn-start', label: '▶ Start', className: 'btn' },
-            { id: 'btn-pause', label: '⏸ Pause', className: 'btn' },
             { id: 'btn-federate', label: '🔄 Federate', className: 'btn' },
             { id: 'btn-reset', label: '↻ Reset', className: 'btn' },
-            { id: 'btn-export', label: '💾 Export', className: 'btn' },
-            { id: 'btn-load', label: '📂 Load', className: 'btn' },
-            { id: 'btn-inference', label: '🔮 Inference', className: 'btn' }
+            { id: 'btn-save', label: '💾 Save Checkpoint', className: 'btn' },
+            { id: 'btn-load', label: '📂 Load Checkpoint', className: 'btn' },
+            { id: 'btn-export', label: '📥 Export', className: 'btn' }
         ]
     });
 
@@ -134,18 +198,51 @@ export const createFederatedApp = (config) => {
         ]
     });
 
-    // Create hidden file input for model loading
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.accept = '.json';
-    fileInput.style.display = 'none';
-    document.body.appendChild(fileInput);
+    // Create inference UI
+    let inferenceUI = null;
+    let resultsPanel = null;
+    let evaluationRunning = false;
+    let evaluationCancelled = false;
+
+    // Create persistence manager (DI pattern)
+    const persistence = createPersistenceManager({
+        appName: name,
+        onLoad: (model, metadata, source) => {
+            if (currentMode === MODES.TRAINING) {
+                // Load to all training clients
+                clients.forEach(c => c.agent.setModel(model));
+                alert(`✅ Model loaded from ${source}\n${metadata.totalStates || 0} states`);
+                console.log('📂 Model loaded:', metadata);
+            } else {
+                // Load for inference
+                if (trainingClients.length === 0) {
+                    trainingClients = [{
+                        agent: createTabularAgent({
+                            alpha: 0,
+                            gamma: 0,
+                            epsilon: 0,
+                            numActions: environment.actions.length
+                        })
+                    }];
+                }
+                trainingClients[0].agent.setModel(model);
+                alert(`✅ Model loaded for inference\n${metadata.totalStates || 0} states`);
+                if (inferenceUI) {
+                    inferenceUI.modelSelect.value = 'file';
+                }
+            }
+        },
+        onError: (error) => {
+            alert(`❌ Load failed: ${error}`);
+        }
+    });
 
     // Initialize state
     let clients = [];
+    let trainingClients = []; // Backup of training clients
     let isRunning = false;
-    let isInferenceMode = false;
     let animationId = null;
+    let lastCheckpointTime = null;
 
     // Create federated manager
     const fedManager = createFederatedManager({
@@ -258,10 +355,21 @@ export const createFederatedApp = (config) => {
         if (done) {
             client.metrics.episodeCount++;
             client.agent.decayEpsilon();
-            client.state = environment.reset(client.id);
+            
+            // Save episode result before reset
+            const completedEpisode = {
+                bounces: client.state.bounces || 0,
+                catches: client.state.catches || 0,
+                misses: client.state.misses || 0,
+                steps: client.state.steps || 0
+            };
+            
+            // Pass old state to reset so cumulative stats can be preserved
+            const oldState = client.state;
+            client.state = environment.reset(client.id, oldState);
             
             if (onEpisodeEnd) {
-                onEpisodeEnd(client);
+                onEpisodeEnd(client, completedEpisode);
             }
         }
         
@@ -277,10 +385,8 @@ export const createFederatedApp = (config) => {
     const animate = async () => {
         if (!isRunning) return;
 
-        // Step all clients (sequentially if async, to avoid race conditions)
-        for (const client of clients) {
-            await stepClient(client);
-        }
+        // Step all clients IN PARALLEL for maximum performance
+        await Promise.all(clients.map(client => stepClient(client)));
 
         // Check auto-federation
         if (fedManager.shouldFederate(clients)) {
@@ -295,19 +401,350 @@ export const createFederatedApp = (config) => {
         animationId = requestAnimationFrame(animate);
     };
 
-    // Perform federation
+    // Perform federation with delta tracking
     const performFederation = () => {
+        // Capture old model before federation
+        const oldModel = clients[0]?.agent?.getModel() || {};
+        
+        // Perform federation
         const globalModel = fedManager.federate(clients);
         
+        // Compute model delta (convergence detection)
+        const delta = computeModelDelta(oldModel, globalModel);
+        
+        // Display feedback
+        const round = fedManager.getRound();
+        let message = `🔄 Federation Round ${round}\n`;
+        message += `States: ${delta.totalStates}\n`;
+        message += `Changed: ${delta.statesChanged} (${Math.round(delta.statesChanged/delta.totalStates*100)}%)\n`;
+        message += `Avg Δ: ${delta.avgDelta.toFixed(4)}\n`;
+        message += `Max Δ: ${delta.maxDelta.toFixed(4)}\n`;
+        
+        if (delta.converged) {
+            message += `\n✅ Models converged! (Δ < 0.01)`;
+        }
+        
+        console.log(message);
+        
+        // Show toast notification (non-blocking)
+        showToast(delta.converged ? '✅ Federated (Converged)' : `🔄 Federated R${round}`, 
+                  `${delta.statesChanged}/${delta.totalStates} states changed`);
+        
         if (onFederation) {
-            onFederation(globalModel, fedManager.getRound());
+            onFederation(globalModel, round, delta);
         }
         
         updateGlobalMetrics();
-        console.log(`✅ Federation round ${fedManager.getRound()} complete`);
     };
 
-    // Button handlers
+    // =========================================================================
+    // INFERENCE MODE FUNCTIONS (Must be defined before mode switching)
+    // =========================================================================
+
+    const startInference = async ({ numEpisodes, modelSource }) => {
+        evaluationCancelled = false;
+        evaluationRunning = true;
+
+        inferenceUI.runBtn.disabled = true;
+        inferenceUI.stopBtn.disabled = false;
+        resultsPanel.exportBtn.style.display = 'none';
+
+        // Get model
+        let modelData;
+        if (modelSource === 'latest') {
+            // Load from localStorage using persistence manager's key
+            const storageKey = persistence.getKey();
+            const storedData = localStorage.getItem(storageKey);
+            if (!storedData) {
+                alert('❌ No training data found. Please train the model first.');
+                evaluationRunning = false;
+                inferenceUI.runBtn.disabled = false;
+                inferenceUI.stopBtn.disabled = true;
+                return;
+            }
+            modelData = deserializeModel(storedData);
+            if (!modelData) {
+                alert('❌ Invalid checkpoint data.');
+                evaluationRunning = false;
+                inferenceUI.runBtn.disabled = false;
+                inferenceUI.stopBtn.disabled = true;
+                return;
+            }
+        } else {
+            // Model from file (already loaded)
+            if (!trainingClients[0]?.agent) {
+                alert('❌ Please load a model file first.');
+                evaluationRunning = false;
+                inferenceUI.runBtn.disabled = false;
+                inferenceUI.stopBtn.disabled = true;
+                return;
+            }
+            modelData = { model: trainingClients[0].agent.getModel() };
+        }
+
+        // Create frozen agent
+        const frozenAgent = createInferenceAgent(
+            modelData.model,
+            environment.actions.length
+        );
+
+        console.log(`🎯 Starting inference: ${numEpisodes} episodes with frozen weights (ε=0, α=0)`);
+
+        // Run evaluation
+        try {
+            // Track cumulative results for progress updates
+            let cumulativeTotalReward = 0;
+            let cumulativeSuccessCount = 0;
+            let cumulativeFailureCount = 0;
+            
+            const results = await runEvaluation({
+                agent: frozenAgent,
+                environment,
+                getState: environment.getState,
+                numEpisodes,
+                renderFn: render,
+                ctx: clients[0].ctx,
+                onEpisodeComplete: (episodeResult, current, total) => {
+                    if (evaluationCancelled) return;
+                    
+                    // Update cumulative stats
+                    cumulativeTotalReward += episodeResult.totalReward;
+                    if (episodeResult.success) cumulativeSuccessCount++;
+                    else cumulativeFailureCount++;
+                    
+                    // Create partial results for progress display
+                    const partialResults = {
+                        episodes: [],  // Not needed for progress display
+                        totalReward: cumulativeTotalReward,
+                        successCount: cumulativeSuccessCount,
+                        failureCount: cumulativeFailureCount
+                    };
+                    updateResults(resultsPanel.content, partialResults, current, total);
+                },
+                onAllComplete: (finalResults) => {
+                    if (evaluationCancelled) {
+                        console.log('⏹ Inference cancelled');
+                        return;
+                    }
+
+                    updateResults(resultsPanel.content, finalResults);
+                    resultsPanel.exportBtn.style.display = 'inline-block';
+                    resultsPanel.exportBtn.onclick = () => exportInferenceResults(finalResults);
+                    
+                    console.log('✅ Inference complete:', finalResults);
+                }
+            });
+
+            if (!evaluationCancelled) {
+                console.log('📊 Final Results:', results);
+            }
+        } catch (error) {
+            console.error('❌ Inference error:', error);
+            alert('Inference failed: ' + error.message);
+        } finally {
+            evaluationRunning = false;
+            inferenceUI.runBtn.disabled = false;
+            inferenceUI.stopBtn.disabled = true;
+        }
+    };
+
+    const stopInference = () => {
+        evaluationCancelled = true;
+        console.log('⏹ Stopping inference...');
+    };
+
+    const loadModelFromFile = () => {
+        persistence.import();
+    };
+
+    const exportInferenceResults = (results) => {
+        const data = {
+            appName: name,
+            timestamp: new Date().toISOString(),
+            summary: {
+                totalEpisodes: results.episodes.length,
+                successRate: results.successRate,
+                avgReward: results.avgReward,
+                stdReward: results.stdReward,
+                consistency: results.consistency
+            },
+            episodes: results.episodes.map(ep => ({
+                episode: ep.episodeNum,
+                reward: ep.totalReward,
+                steps: ep.steps,
+                success: ep.success
+            }))
+        };
+
+        const json = JSON.stringify(data, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name.replace(/\s+/g, '-')}-inference-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const setupInferenceUI = () => {
+        if (!inferenceUI) {
+            inferenceUI = createInferenceUI({
+                container: inferenceControlsDiv,
+                onRunTest: startInference,
+                onStop: stopInference,
+                onLoadModel: loadModelFromFile
+            });
+            resultsPanel = createResultsPanel(inferenceControlsDiv);
+        }
+    };
+
+    // =========================================================================
+    // MODE SWITCHING LOGIC
+    // =========================================================================
+
+    const onModeSwitch = (mode) => {
+        if (mode === MODES.INFERENCE) {
+            switchToInferenceMode();
+        } else {
+            switchToTrainingMode();
+        }
+    };
+
+    const switchToInferenceMode = () => {
+        console.log('🎯 Switching to INFERENCE mode...');
+        
+        // Stop training
+        if (isRunning) {
+            isRunning = false;
+            cancelAnimationFrame(animationId);
+        }
+
+        // Save current training state
+        if (clients.length > 0) {
+            const globalModel = fedManager.federate(clients);
+            persistence.save(globalModel, {
+                numClients: clients.length,
+                federationRound: fedManager.getRound()
+            });
+            trainingClients = [...clients];
+            console.log('✅ Training state saved');
+        }
+
+        // Show/hide UI elements
+        console.log('Hiding training controls...');
+        trainingControlsDiv.style.display = 'none';
+        inferenceControlsDiv.style.display = 'block';
+        
+        // Hide input containers (with safety check)
+        if (autoFedCheckbox && autoFedCheckbox.container) {
+            autoFedCheckbox.container.style.display = 'none';
+            console.log('✅ Auto-federate hidden');
+        } else {
+            console.error('❌ autoFedCheckbox.container not found!', autoFedCheckbox);
+        }
+        
+        if (clientCountInput && clientCountInput.container) {
+            clientCountInput.container.style.display = 'none';
+            console.log('✅ Client count input hidden');
+        } else {
+            console.error('❌ clientCountInput.container not found!', clientCountInput);
+        }
+        
+        console.log('✅ Controls visibility updated');
+        console.log('inferenceControlsDiv visible?', inferenceControlsDiv.style.display);
+        console.log('inferenceControlsDiv children:', inferenceControlsDiv.children.length);
+
+        // Setup inference UI
+        console.log('Setting up inference UI...');
+        setupInferenceUI();
+        console.log('✅ Inference UI setup complete');
+        console.log('inferenceUI created?', !!inferenceUI);
+        console.log('inferenceControlsDiv children after setup:', inferenceControlsDiv.children.length);
+
+        // Clear client grid and show single canvas
+        console.log('Clearing client grid and creating single canvas...');
+        layout.clients.innerHTML = '';
+        console.log('layout.clients cleared, children:', layout.clients.children.length);
+        
+        const singleCanvas = document.createElement('canvas');
+        singleCanvas.width = canvasWidth;
+        singleCanvas.height = canvasHeight;
+        singleCanvas.style.cssText = `
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+            background: #0f172a;
+            margin: 20px auto;
+            display: block;
+        `;
+        console.log('Canvas created:', singleCanvas.width, 'x', singleCanvas.height);
+        
+        layout.clients.appendChild(singleCanvas);
+        console.log('Canvas appended, children:', layout.clients.children.length);
+
+        clients = [{
+            id: 0,
+            canvas: singleCanvas,
+            ctx: singleCanvas.getContext('2d'),
+            state: environment.reset(0)
+        }];
+        console.log('Single client configured');
+
+        console.log('🎯 ✅ Switched to INFERENCE mode successfully');
+    };
+
+    const switchToTrainingMode = () => {
+        // Stop any inference
+        evaluationCancelled = true;
+
+        // Show/hide UI elements
+        trainingControlsDiv.style.display = 'block';
+        inferenceControlsDiv.style.display = 'none';
+        autoFedCheckbox.container.style.display = 'block';
+        clientCountInput.container.style.display = 'block';
+
+        // Restore training clients
+        if (trainingClients.length > 0) {
+            layout.clients.innerHTML = '';
+            const clientElements = createClientGrid({
+                numClients: trainingClients.length,
+                canvasWidth,
+                canvasHeight,
+                container: layout.clients
+            });
+
+            clients = trainingClients.map((oldClient, i) => ({
+                ...oldClient,
+                element: clientElements[i],
+                canvas: clientElements[i].canvas,
+                ctx: clientElements[i].canvas.getContext('2d')
+            }));
+        } else {
+            initClients(numClients);
+        }
+
+        console.log('🧠 Switched to TRAINING mode');
+    };
+
+    // =========================================================================
+    // CREATE MODE SWITCHER (After functions are defined)
+    // =========================================================================
+
+    const modeSwitcher = createModeSwitcher({
+        container: layout.controls,
+        initialMode: currentMode,
+        onModeChange: (mode, theme) => {
+            currentMode = mode;
+            onModeSwitch(mode);
+        }
+    });
+
+    // Move mode switcher to top of controls
+    layout.controls.insertBefore(modeSwitcher.container, layout.controls.firstChild);
+
+    // =========================================================================
+    // BUTTON HANDLERS (TRAINING MODE)
+    // =========================================================================
+
     buttons['btn-start'].onclick = () => {
         if (!isRunning) {
             isRunning = true;
@@ -330,50 +767,50 @@ export const createFederatedApp = (config) => {
         buttons['btn-start'].textContent = '▶ Start';
     };
 
-    buttons['btn-export'].onclick = () => {
-        const models = clients.map(c => c.agent.getModel());
+    buttons['btn-save'].onclick = () => {
         const globalModel = fedManager.federate(clients);
-        const json = serializeModel(globalModel, {
-            appName: name,
+        const saved = persistence.save(globalModel, {
             numClients: clients.length,
-            federationRound: fedManager.getRound()
+            federationRound: fedManager.getRound(),
+            avgEpisodes: clients.reduce((sum, c) => sum + c.getMetrics().episodeCount, 0) / clients.length
         });
         
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${name.replace(/\s+/g, '-')}-model-${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
+        if (saved) {
+            lastCheckpointTime = new Date().toLocaleTimeString();
+            showToast('💾 Checkpoint Saved', `Round ${fedManager.getRound()}, ${lastCheckpointTime}`);
+        } else {
+            alert('❌ Failed to save checkpoint');
+        }
     };
 
     buttons['btn-load'].onclick = () => {
-        fileInput.click();
-    };
-
-    fileInput.onchange = (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const data = deserializeModel(event.target.result);
-            if (data) {
-                clients.forEach(c => c.agent.setModel(data.model));
-                alert('✅ Model loaded successfully');
+        if (!persistence.hasCheckpoint()) {
+            // No localStorage checkpoint, try file import
+            persistence.import();
+        } else {
+            // Ask user: load from localStorage or file?
+            const choice = confirm('Load checkpoint from localStorage?\n\nOK = localStorage\nCancel = Choose file');
+            if (choice) {
+                persistence.load();
             } else {
-                alert('❌ Invalid model file');
+                persistence.import();
             }
-        };
-        reader.readAsText(file);
+        }
     };
 
-    buttons['btn-inference'].onclick = () => {
-        isInferenceMode = !isInferenceMode;
-        clients.forEach(c => c.agent.setInferenceMode(isInferenceMode));
-        buttons['btn-inference'].textContent = isInferenceMode ? '🎯 Training' : '🔮 Inference';
-        buttons['btn-inference'].style.background = isInferenceMode ? '#4f8cff' : '#444';
+    buttons['btn-export'].onclick = () => {
+        const globalModel = fedManager.federate(clients);
+        const success = persistence.export(globalModel, {
+            numClients: clients.length,
+            federationRound: fedManager.getRound(),
+            avgEpisodes: clients.reduce((sum, c) => sum + c.getMetrics().episodeCount, 0) / clients.length
+        });
+        
+        if (success) {
+            showToast('📥 Model Exported', `Round ${fedManager.getRound()}`);
+        } else {
+            alert('❌ Export failed');
+        }
     };
 
     autoFedCheckbox.onchange = () => {

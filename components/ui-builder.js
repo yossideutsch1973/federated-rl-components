@@ -195,6 +195,9 @@ export const createInput = (config = {}) => {
     wrapper.appendChild(input);
 
     container.appendChild(wrapper);
+    
+    // Return input with container reference for visibility control
+    input.container = wrapper;
     return input;
 };
 

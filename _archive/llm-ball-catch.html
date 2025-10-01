@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Ball Catch - Federated RL + Physics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+        .info-box {
+            background: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .highlight {
+            background: #fef3c7;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+        import { createPhysicsWorld, createBall, createPlatform } from '../components/physics-engine.js';
+
+        // 🎮 LLM BALL CATCH GAME
+        // LLM sees natural language description and decides: LEFT, STAY, or RIGHT
+        // RL learns which descriptions/prompts make the LLM play best
+
+        // Ollama configuration
+        const OLLAMA_CONFIG = {
+            baseURL: 'http://localhost:11434',
+            model: 'qwen3:1.7b',
+            options: {
+                temperature: 0.3, // Some creativity for movement
+                num_predict: 10,  // Just need one word: LEFT/STAY/RIGHT
+                num_thread: 4
+            },
+            timeout: 5000 // Fast timeout for game responsiveness
+        };
+
+        // Prompt strategies (RL learns which works best)
+        const PROMPT_STRATEGIES = [
+            {
+                name: "Technical",
+                template: (ballX, ballY, platX, platY) => 
+                    `Ball position: x=${ballX.toFixed(1)}, y=${ballY.toFixed(1)}\nPlatform x=${platX.toFixed(1)}\nMove: LEFT, STAY, or RIGHT?`
+            },
+            {
+                name: "Intuitive", 
+                template: (ballX, ballY, platX, platY) => {
+                    const direction = ballX < platX ? "left" : ballX > platX ? "right" : "above";
+                    return `The ball is falling ${direction} of your platform. Which way should you move? LEFT, STAY, or RIGHT?`;
+                }
+            },
+            {
+                name: "Urgent",
+                template: (ballX, ballY, platX, platY) => {
+                    const distance = Math.abs(ballX - platX).toFixed(1);
+                    return `URGENT! Ball ${distance} units away! Move LEFT, STAY, or RIGHT NOW!`;
+                }
+            },
+            {
+                name: "Relative",
+                template: (ballX, ballY, platX, platY) => {
+                    const offset = (ballX - platX).toFixed(1);
+                    return `Ball offset: ${offset > 0 ? '+' : ''}${offset}. Choose: LEFT, STAY, RIGHT`;
+                }
+            },
+            {
+                name: "Simple",
+                template: (ballX, ballY, platX, platY) => 
+                    `Ball X: ${ballX.toFixed(0)}, Platform X: ${platX.toFixed(0)}. Move?`
+            }
+        ];
+
+        // Check Ollama availability
+        async function checkOllama() {
+            try {
+                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/tags`, {
+                    signal: AbortSignal.timeout(3000)
+                });
+                return response.ok;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Call LLM with retry logic
+        async function callLLM(prompt, retryCount = 0) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), OLLAMA_CONFIG.timeout);
+                
+                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: OLLAMA_CONFIG.model,
+                        prompt: prompt + "\nAnswer with just one word: LEFT, STAY, or RIGHT.",
+                        stream: false,
+                        options: OLLAMA_CONFIG.options
+                    }),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                return data.response.trim();
+            } catch (e) {
+                // Retry once on failure
+                if (retryCount < 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    return callLLM(prompt, retryCount + 1);
+                }
+                throw new Error(`LLM failed: ${e.message}`);
+            }
+        }
+
+        // Parse LLM response to action
+        function parseAction(llmResponse) {
+            const response = llmResponse.toUpperCase();
+            if (response.includes('LEFT')) return 0;
+            if (response.includes('STAY') || response.includes('WAIT')) return 1;
+            if (response.includes('RIGHT')) return 2;
+            // Default: try to extract position
+            return 1; // STAY on unclear response
+        }
+
+        console.log('🎮 LLM BALL CATCH GAME');
+        console.log('  Model:', OLLAMA_CONFIG.model);
+        console.log('  Strategies:', PROMPT_STRATEGIES.length);
+
+        // Create game
+        const gameApp = createFederatedApp({
+            name: '🎮 LLM Ball Catch Game',
+            subtitle: '🤖 LLM controls platform • 🎯 RL learns best prompts • ⚽ Physics-based gameplay',
+            
+            numClients: 4,
+            canvasWidth: 400,
+            canvasHeight: 400,
+            
+            // RL parameters
+            alpha: 0.15,
+            gamma: 0.95,
+            epsilon: 0.25,
+            epsilonDecay: 0.995,
+            minEpsilon: 0.05,
+            
+            // Federation
+            autoFederate: true,
+            federationInterval: 20, // Federate every 20 catches
+            
+            environment: {
+                actions: PROMPT_STRATEGIES.map(s => s.name),
+                
+                // State: Ball position relative to platform
+                getState: (state) => {
+                    const ballX = state.ball.position.x;
+                    const platX = state.platform.position.x;
+                    const distance = Math.abs(ballX - platX);
+                    
+                    // Discretize distance into buckets
+                    if (distance < 30) return 'close';
+                    if (distance < 80) return 'medium';
+                    return 'far';
+                },
+                
+                // Step: Ask LLM which way to move
+                step: async (state, strategyIndex) => {
+                    const strategy = PROMPT_STRATEGIES[strategyIndex];
+                    
+                    // Get current positions
+                    const ballX = state.ball.position.x;
+                    const ballY = state.ball.position.y;
+                    const platX = state.platform.position.x;
+                    const platY = state.platform.position.y;
+                    
+                    // Build prompt using selected strategy
+                    const prompt = strategy.template(ballX, ballY, platX, platY);
+                    
+                    let action = 1; // Default: STAY
+                    let llmResponse = '';
+                    let usedLLM = false;
+                    
+                    try {
+                        if (state.ollamaAvailable) {
+                            llmResponse = await callLLM(prompt);
+                            action = parseAction(llmResponse);
+                            usedLLM = true;
+                            state.llmSuccesses = (state.llmSuccesses || 0) + 1;
+                            
+                            // Keep LLM marked as available on success
+                            if (!state.llmConnected) {
+                                console.log(`✅ Client ${state.clientId}: LLM connected and working`);
+                                state.llmConnected = true;
+                            }
+                        } else {
+                            if (state.llmConnected) {
+                                console.warn(`❌ Client ${state.clientId}: LLM marked as unavailable`);
+                            }
+                            throw new Error('Ollama marked unavailable');
+                        }
+                    } catch (error) {
+                        // Fallback: Noisy heuristic (not perfect, allows RL to learn)
+                        const offset = ballX - platX;
+                        const noise = (Math.random() - 0.5) * 30; // Add noise
+                        const noisyOffset = offset + noise;
+                        
+                        if (noisyOffset < -20) action = 0; // LEFT
+                        else if (noisyOffset > 20) action = 2; // RIGHT
+                        else action = 1; // STAY
+                        
+                        llmResponse = `Fallback (offset: ${offset.toFixed(1)})`;
+                        state.llmFailures = (state.llmFailures || 0) + 1;
+                        
+                        console.warn(`⚠️ LLM failed, using noisy heuristic: ${error.message}`);
+                    }
+                    
+                    // Apply action to platform
+                    const moveSpeed = 8;
+                    if (action === 0) { // LEFT
+                        Matter.Body.setVelocity(state.platform, { x: -moveSpeed, y: 0 });
+                    } else if (action === 2) { // RIGHT
+                        Matter.Body.setVelocity(state.platform, { x: moveSpeed, y: 0 });
+                    } else { // STAY
+                        Matter.Body.setVelocity(state.platform, { x: 0, y: 0 });
+                    }
+                    
+                    // Step physics
+                    state.physicsWorld.step();
+                    
+                    // Track bounces
+                    state.bounces = state.bounces || 0;
+                    
+                    // Check if ball touched platform
+                    const ballBottom = state.ball.position.y + 10;
+                    const platTop = state.platform.position.y - 5;
+                    const touchingPlatform = ballBottom >= platTop - 2 && 
+                                             Math.abs(ballX - platX) < 55;
+                    
+                    if (touchingPlatform && !state.lastTouchingPlatform) {
+                        state.bounces++;
+                        console.log(`🏀 Client ${state.clientId}: Bounce #${state.bounces}! (velY: ${state.ball.velocity.y.toFixed(2)})`);
+                    }
+                    state.lastTouchingPlatform = touchingPlatform;
+                    
+                    // Check if ball fell off bottom
+                    const fell = state.ball.position.y > 420;
+                    
+                    let reward = -0.05; // Small penalty per step
+                    let done = false;
+                    
+                    // Success: Ball bounced on platform at least once
+                    if (state.bounces > 0 && state.steps > 20) {
+                        reward = 10 + state.bounces * 2; // Bonus for multiple bounces!
+                        done = true;
+                        state.catches = (state.catches || 0) + 1;
+                    } 
+                    // Failure: Ball fell off without bouncing
+                    else if (fell) {
+                        reward = -5;
+                        done = true;
+                        state.misses = (state.misses || 0) + 1;
+                    }
+                    // Timeout: Too many steps (20 steps = ~4 seconds at 60fps)
+                    else if (state.steps > 200) {
+                        reward = state.bounces > 0 ? 5 : -3; // Partial credit if bounced
+                        done = true;
+                        if (state.bounces > 0) {
+                            state.catches = (state.catches || 0) + 1;
+                        } else {
+                            state.misses = (state.misses || 0) + 1;
+                        }
+                    }
+                    
+                    // Store for rendering
+                    state.lastPrompt = prompt;
+                    state.lastResponse = llmResponse;
+                    state.lastAction = ['LEFT', 'STAY', 'RIGHT'][action];
+                    state.lastStrategy = strategy.name;
+                    state.steps = (state.steps || 0) + 1;
+                    
+                    // Return updated state (preserve ALL properties!)
+                    return {
+                        state: {
+                            ...state,
+                            // Ensure ollamaAvailable persists across steps
+                            ollamaAvailable: state.ollamaAvailable
+                        },
+                        reward,
+                        done
+                    };
+                },
+                
+                // Reset: New ball drop (called on first init and after each episode)
+                reset: (clientId, preserveState) => {
+                    const physicsWorld = createPhysicsWorld({
+                        width: 400,
+                        height: 400,
+                        gravity: 0.5
+                    });
+                    
+                    // Create ball at random X position
+                    const ballX = 50 + Math.random() * 300;
+                    const ball = createBall(ballX, 50, 10, { 
+                        restitution: 0.8,  // High bounciness!
+                        friction: 0.01,
+                        frictionAir: 0.001
+                    });
+                    physicsWorld.addBody(ball);
+                    
+                    // Create platform at bottom center
+                    const platform = createPlatform(200, 380, 100, 10, { 
+                        isStatic: false,
+                        friction: 0.9,
+                        restitution: 0.9  // Platform bounces ball back!
+                    });
+                    physicsWorld.addBody(platform);
+                    
+                    // Preserve critical state between episodes if provided
+                    const baseState = {
+                        physicsWorld,
+                        ball,
+                        platform,
+                        steps: 0,
+                        bounces: 0,
+                        lastTouchingPlatform: false,
+                        lastPrompt: '',
+                        lastResponse: '',
+                        lastAction: '',
+                        lastStrategy: '',
+                        clientId
+                    };
+                    
+                    // First init: create fresh state
+                    if (!preserveState) {
+                        return {
+                            ...baseState,
+                            catches: 0,
+                            misses: 0,
+                            llmSuccesses: 0,
+                            llmFailures: 0,
+                            ollamaAvailable: false,
+                            llmConnected: false
+                        };
+                    }
+                    
+                    // Episode reset: preserve cumulative stats and LLM status
+                    return {
+                        ...baseState,
+                        catches: preserveState.catches || 0,
+                        misses: preserveState.misses || 0,
+                        llmSuccesses: preserveState.llmSuccesses || 0,
+                        llmFailures: preserveState.llmFailures || 0,
+                        ollamaAvailable: preserveState.ollamaAvailable || false,
+                        llmConnected: preserveState.llmConnected || false
+                    };
+                }
+            },
+            
+            // Render game
+            render: (ctx, state) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                
+                // Background
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Grid
+                ctx.strokeStyle = '#16213e';
+                ctx.lineWidth = 1;
+                for (let x = 0; x < w; x += 40) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, h);
+                    ctx.stroke();
+                }
+                for (let y = 0; y < h; y += 40) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(w, y);
+                    ctx.stroke();
+                }
+                
+                // Draw ball (changes color on bounce!)
+                const ballColor = state.bounces > 0 ? '#22c55e' : '#00d4ff';
+                ctx.fillStyle = ballColor;
+                ctx.shadowBlur = state.bounces > 0 ? 20 : 15;
+                ctx.shadowColor = ballColor;
+                ctx.beginPath();
+                ctx.arc(
+                    state.ball.position.x, 
+                    state.ball.position.y, 
+                    10, 0, Math.PI * 2
+                );
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                
+                // Draw velocity indicator (shows if ball is moving)
+                const velY = state.ball.velocity.y;
+                if (Math.abs(velY) > 1) {
+                    ctx.strokeStyle = velY > 0 ? '#ef4444' : '#22c55e';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(state.ball.position.x, state.ball.position.y);
+                    ctx.lineTo(state.ball.position.x, state.ball.position.y + velY * 2);
+                    ctx.stroke();
+                }
+                
+                // Draw platform
+                ctx.fillStyle = '#4CAF50';
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = '#4CAF50';
+                ctx.fillRect(
+                    state.platform.position.x - 50,
+                    state.platform.position.y - 5,
+                    100, 10
+                );
+                ctx.shadowBlur = 0;
+                
+                // LLM status indicator
+                ctx.fillStyle = state.ollamaAvailable ? '#22c55e' : '#ef4444';
+                ctx.fillRect(w - 60, 10, 50, 20);
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 10px monospace';
+                ctx.fillText(state.ollamaAvailable ? 'LLM ✓' : 'LLM ✗', w - 55, 23);
+                
+                // Stats
+                ctx.fillStyle = '#fff';
+                ctx.font = '12px monospace';
+                ctx.fillText(`Catches: ${state.catches}`, 10, 20);
+                ctx.fillText(`Misses: ${state.misses}`, 10, 35);
+                const accuracy = state.catches + state.misses > 0 ?
+                    Math.round(state.catches / (state.catches + state.misses) * 100) : 0;
+                ctx.fillText(`Accuracy: ${accuracy}%`, 10, 50);
+                
+                // Current bounces
+                if (state.bounces > 0) {
+                    ctx.fillStyle = '#22c55e';
+                    ctx.font = 'bold 14px monospace';
+                    ctx.fillText(`Bounces: ${state.bounces}`, 10, 70);
+                }
+                
+                // Strategy
+                if (state.lastStrategy) {
+                    ctx.fillStyle = '#f59e0b';
+                    ctx.fillText(`Strategy: ${state.lastStrategy}`, 10, h - 40);
+                }
+                
+                // Action
+                if (state.lastAction) {
+                    ctx.fillStyle = '#8b5cf6';
+                    ctx.font = 'bold 14px monospace';
+                    ctx.fillText(`→ ${state.lastAction}`, 10, h - 20);
+                }
+                
+                // LLM response (truncated)
+                if (state.lastResponse) {
+                    ctx.fillStyle = '#64748b';
+                    ctx.font = '10px monospace';
+                    const resp = state.lastResponse.substring(0, 40);
+                    ctx.fillText(resp, 10, h - 5);
+                }
+            },
+            
+            // Lifecycle hooks
+            onClientInit: async (client) => {
+                console.log(`🔧 Client ${client.id} initializing...`);
+                const available = await checkOllama();
+                client.state.ollamaAvailable = available;
+                
+                if (!available) {
+                    console.warn(`⚠️ Client ${client.id}: Using fallback heuristic (Ollama not available)`);
+                } else {
+                    console.log(`✅ Client ${client.id}: LLM ready for control`);
+                }
+            },
+            
+            onEpisodeEnd: (client) => {
+                const accuracy = client.state.catches + client.state.misses > 0 ?
+                    (client.state.catches / (client.state.catches + client.state.misses) * 100) : 0;
+                console.log(`🎯 Client ${client.id}: ${client.state.catches} catches, ${accuracy.toFixed(0)}% accuracy`);
+            },
+            
+            onFederation: (globalModel, round) => {
+                console.log(`🔄 Federation ${round}: Sharing best prompt strategies`);
+                
+                // Show which strategies work best for each distance
+                const distances = ['close', 'medium', 'far'];
+                distances.forEach(dist => {
+                    if (globalModel[dist]) {
+                        const qValues = globalModel[dist];
+                        const bestIdx = qValues.indexOf(Math.max(...qValues));
+                        const bestStrategy = PROMPT_STRATEGIES[bestIdx].name;
+                        console.log(`  ${dist}: ${bestStrategy} (Q=${qValues[bestIdx].toFixed(2)})`);
+                    }
+                });
+            }
+        });
+
+        // Update game-specific metrics
+        setInterval(() => {
+            const clients = gameApp.getClients();
+            if (!clients || clients.length === 0) return;
+            
+            // Calculate totals
+            const totalCatches = clients.reduce((sum, c) => sum + (c.state.catches || 0), 0);
+            const totalMisses = clients.reduce((sum, c) => sum + (c.state.misses || 0), 0);
+            const totalGames = totalCatches + totalMisses;
+            const avgAccuracy = totalGames > 0 ? Math.round(totalCatches / totalGames * 100) : 0;
+            const totalLLMSuccess = clients.reduce((sum, c) => sum + (c.state.llmSuccesses || 0), 0);
+            const totalLLMFail = clients.reduce((sum, c) => sum + (c.state.llmFailures || 0), 0);
+            const llmSuccessRate = totalLLMSuccess + totalLLMFail > 0 ? 
+                Math.round(totalLLMSuccess / (totalLLMSuccess + totalLLMFail) * 100) : 0;
+            
+            // Update existing metrics panel with game stats
+            const metricsPanel = document.querySelector('.metrics-panel');
+            if (metricsPanel) {
+                metricsPanel.innerHTML = `
+                    <div class="metric">
+                        <div class="metric-label">Total Catches</div>
+                        <div class="metric-value">${totalCatches}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Total Misses</div>
+                        <div class="metric-value">${totalMisses}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Catch Rate</div>
+                        <div class="metric-value">${avgAccuracy}%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">LLM Success</div>
+                        <div class="metric-value">${llmSuccessRate}%</div>
+                    </div>
+                `;
+            }
+        }, 500); // Update every 500ms
+        
+        // Add instructions
+        setTimeout(() => {
+            const info = document.createElement('div');
+            info.className = 'info-box';
+            info.innerHTML = `
+                <h3 style="margin-top:0">🎮 How It Works</h3>
+                <p><strong>Goal:</strong> LLM controls platform to catch falling balls using physics!</p>
+                
+                <h4>What's Happening:</h4>
+                <ul style="margin:0;padding-left:20px;line-height:1.6">
+                    <li><span class="highlight">Ball falls</span> from random positions with gravity</li>
+                    <li><span class="highlight">Ball bounces</span> realistically when hitting platform (high restitution!)</li>
+                    <li><span class="highlight">LLM sees</span> natural language description of positions</li>
+                    <li><span class="highlight">LLM decides</span> action: LEFT, STAY, or RIGHT</li>
+                    <li><span class="highlight">RL learns</span> which prompt strategy makes LLM play best</li>
+                    <li><span class="highlight">Bonus points</span> for multiple bounces on platform!</li>
+                    <li><span class="highlight">Federation shares</span> best strategies across all clients</li>
+                </ul>
+                
+                <h4>5 Prompt Strategies:</h4>
+                <ul style="margin:0;padding-left:20px;line-height:1.6">
+                    <li><strong>Technical:</strong> Precise coordinates</li>
+                    <li><strong>Intuitive:</strong> Natural language direction</li>
+                    <li><strong>Urgent:</strong> Time pressure framing</li>
+                    <li><strong>Relative:</strong> Offset-based</li>
+                    <li><strong>Simple:</strong> Minimal information</li>
+                </ul>
+                
+                <p style="margin-top:15px"><strong>💡 Key Insight:</strong> Different prompts make the LLM perform better/worse. 
+                RL discovers which prompts work best, then federates this knowledge!</p>
+                
+                <p><strong>⚡ Fallback:</strong> If Ollama unavailable, uses simple heuristic (still shows RL learning)</p>
+            `;
+            document.getElementById('app').insertBefore(info, document.getElementById('app').firstChild.nextSibling);
+        }, 100);
+    </script>
+</body>
+</html>
+

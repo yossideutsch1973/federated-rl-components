@@ -61,6 +61,81 @@ export const federatedAverage = (models, weights = null) => {
 };
 
 /**
+ * Compute Q-table difference metrics
+ * Formula: Δ_abs = Σ|Q_new - Q_old| / |S|
+ *          Δ_rel = Δ_abs / (max(|Q|) + ε)
+ * 
+ * Measures how much a model changed after federation.
+ * Useful for detecting convergence.
+ * 
+ * @param {Object} oldModel - Q-table before federation
+ * @param {Object} newModel - Q-table after federation
+ * @returns {Object} Difference statistics
+ * @pure
+ */
+export const computeModelDelta = (oldModel, newModel) => {
+    try {
+        // Collect all states from both models
+        const allStates = new Set([
+            ...Object.keys(oldModel),
+            ...Object.keys(newModel)
+        ]);
+        
+        if (allStates.size === 0) {
+            return {
+                totalDelta: 0,
+                avgDelta: 0,
+                maxDelta: 0,
+                statesChanged: 0,
+                totalStates: 0,
+                relativeDelta: 0
+            };
+        }
+        
+        let totalDelta = 0;
+        let maxDelta = 0;
+        let statesChanged = 0;
+        let maxAbsQ = 0;
+        
+        allStates.forEach(state => {
+            const oldQ = oldModel[state] || [];
+            const newQ = newModel[state] || [];
+            const numActions = Math.max(oldQ.length, newQ.length);
+            
+            let stateDelta = 0;
+            for (let i = 0; i < numActions; i++) {
+                const oldVal = oldQ[i] || 0;
+                const newVal = newQ[i] || 0;
+                const delta = Math.abs(newVal - oldVal);
+                
+                stateDelta += delta;
+                maxDelta = Math.max(maxDelta, delta);
+                maxAbsQ = Math.max(maxAbsQ, Math.abs(oldVal), Math.abs(newVal));
+            }
+            
+            totalDelta += stateDelta;
+            if (stateDelta > 0.001) statesChanged++;
+        });
+        
+        const avgDelta = totalDelta / allStates.size;
+        const relativeDelta = maxAbsQ > 0 ? avgDelta / maxAbsQ : 0;
+        
+        return {
+            totalDelta,
+            avgDelta,
+            maxDelta,
+            statesChanged,
+            totalStates: allStates.size,
+            relativeDelta,
+            converged: avgDelta < 0.01 // Heuristic: converged if avg change < 0.01
+        };
+    } catch (e) {
+        console.error('Delta computation failed:', e);
+        return { totalDelta: 0, avgDelta: 0, maxDelta: 0, statesChanged: 0, totalStates: 0, relativeDelta: 0, converged: false };
+    }
+};
+
+/**
  * Weighted Federated Averaging
  * Weights based on number of samples per client
  * 
@@ -275,6 +350,7 @@ export const createFederatedManager = (config = {}) => {
 export default {
     federatedAverage,
     federatedAverageWeighted,
+    computeModelDelta,
     serializeModel,
     deserializeModel,
     shouldFederateByEpisodes,

@@ -102,65 +102,44 @@
         // Ollama API configuration
         const OLLAMA_CONFIG = {
             baseURL: 'http://localhost:11434',
-            model: 'tinyllama', // or 'phi', 'gemma:2b', etc.
+            model: 'qwen3:1.7b', // Fast 2B model
             options: {
                 temperature: 0.1,
-                num_predict: 50
-            }
+                num_predict: 50,
+                num_thread: 4 // Optimize for parallel requests
+            },
+            timeout: 10000 // 10 second timeout (Ollama typically responds in ~350ms)
         };
 
         // Check if Ollama is available
         async function checkOllamaAvailability() {
             try {
-                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/tags`);
-                return response.ok;
+                console.log('🔍 Checking Ollama availability...');
+                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/tags`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+                const isAvailable = response.ok;
+                console.log(isAvailable ? '✅ Ollama is available' : '❌ Ollama not responding');
+                return isAvailable;
             } catch (e) {
+                console.error('❌ Ollama check failed:', e.message);
                 return false;
             }
         }
 
-        // Mock LLM responses (used when Ollama not available)
-        function mockLLM(prompt, question) {
-            // Simulate varying quality based on prompt strategy
-            const strategies = ['Direct', 'Think', 'Concise', 'Expert', 'Format'];
-            const strategyUsed = strategies.find(s => prompt.includes(s.toLowerCase()) || 
-                                                      prompt.includes('step by step') && s === 'Think' ||
-                                                      prompt.includes('only the answer') && s === 'Concise' ||
-                                                      prompt.includes('expert') && s === 'Expert');
-            
-            // Different strategies work better for different categories
-            const optimalMap = {
-                'geography': 'Concise',
-                'math': 'Think',
-                'science': 'Expert',
-                'literature': 'Direct',
-                'history': 'Format',
-                'art': 'Expert'
-            };
-            
-            const isOptimal = optimalMap[question.category] === strategyUsed;
-            const random = Math.random();
-            
-            // If using optimal strategy, higher chance of correct answer
-            if (isOptimal && random > 0.3) {
-                return question.a; // Correct answer
-            } else if (random > 0.6) {
-                return question.a; // Sometimes correct anyway
-            } else {
-                // Wrong answer variations
-                return `The answer is ${['unknown', 'not sure', '42', 'maybe'][Math.floor(random * 4)]}`;
-            }
-        }
-
-        // Call Ollama LLM (or mock if not available)
-        async function callLLM(prompt, question, useMock = false) {
-            if (useMock) {
-                // Simulate network delay
-                await new Promise(resolve => setTimeout(resolve, 100));
-                return mockLLM(prompt, question);
-            }
+        // Call Ollama LLM (NO MOCK - Real only!)
+        const MAX_RETRIES = 2;
+        const RETRY_DELAY_BASE = 1000; // Start with 1 second
+        
+        async function callLLM(prompt, question, retryCount = 0) {
+            const startTime = Date.now();
             
             try {
+                console.log(`📤 [Attempt ${retryCount + 1}] Sending to LLM (${question.category}): ${question.q.substring(0, 50)}...`);
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), OLLAMA_CONFIG.timeout);
+                
                 const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/generate`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -168,19 +147,54 @@
                         model: OLLAMA_CONFIG.model,
                         prompt: prompt,
                         stream: false,
-                        options: OLLAMA_CONFIG.options
-                    })
+                        options: {
+                            ...OLLAMA_CONFIG.options,
+                            num_ctx: 2048 // Limit context to avoid memory issues
+                        }
+                    }),
+                    signal: controller.signal
                 });
                 
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    const error = new Error(`HTTP ${response.status}: ${errorText}`);
+                    
+                    // Retry on 5xx errors or 429 (rate limit)
+                    if ((response.status >= 500 || response.status === 429) && retryCount < MAX_RETRIES) {
+                        const delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
+                        console.warn(`⚠️ Retrying after ${delay}ms (HTTP ${response.status})`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        return callLLM(prompt, question, retryCount + 1);
+                    }
+                    
+                    throw error;
+                }
                 
                 const data = await response.json();
+                const elapsed = Date.now() - startTime;
+                
+                console.log(`📥 LLM Response (${elapsed}ms): ${data.response.trim().substring(0, 80)}...`);
+                
                 return data.response.trim();
             } catch (e) {
-                console.error('LLM call failed, using mock:', e);
-                // Fall back to mock on error
-                await new Promise(resolve => setTimeout(resolve, 100));
-                return mockLLM(prompt, question);
+                const elapsed = Date.now() - startTime;
+                
+                // Retry on network errors or timeouts
+                if ((e.name === 'AbortError' || e.name === 'TypeError') && retryCount < MAX_RETRIES) {
+                    const delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
+                    console.warn(`⚠️ Retrying after ${delay}ms due to: ${e.message}`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return callLLM(prompt, question, retryCount + 1);
+                }
+                
+                console.error(`❌ LLM call FAILED after ${elapsed}ms (${retryCount + 1} attempts):`, e.message);
+                
+                if (e.name === 'AbortError') {
+                    throw new Error(`Timeout after ${OLLAMA_CONFIG.timeout}ms - Ollama overloaded or stuck`);
+                }
+                throw new Error(`${e.message}`);
             }
         }
 
@@ -202,12 +216,21 @@
             return 0.0;
         }
 
+        // Log configuration
+        console.log('⚙️ CONFIGURATION:');
+        console.log('  Model:', OLLAMA_CONFIG.model);
+        console.log('  Clients: 4 (parallel execution)');
+        console.log('  Timeout:', OLLAMA_CONFIG.timeout + 'ms');
+        console.log('  Max Retries:', MAX_RETRIES);
+        console.log('  Context:', OLLAMA_CONFIG.options.num_ctx || 2048);
+        console.log('  Threads:', OLLAMA_CONFIG.options.num_thread || 'default');
+        
         // Create the federated LLM learning system
         createFederatedApp({
             name: '🧠 Federated LLM Meta-Learning',
             subtitle: '🤖 Each client uses Ollama LLM • 🎯 RL learns optimal prompting • 🔄 Federation shares strategies',
             
-            numClients: 4, // Start with 4 clients
+            numClients: 4, // 4 clients running in parallel
             canvasWidth: 400,
             canvasHeight: 300,
             
@@ -238,25 +261,41 @@
                     // Build prompt
                     const prompt = strategy.template(question.q);
                     
-                    // Call LLM (use mock if Ollama not available)
-                    const useMock = !state.ollamaAvailable;
-                    const llmResponse = await callLLM(prompt, question, useMock);
+                    let llmResponse = '';
+                    let score = 0;
+                    let reward = -10; // Default penalty
                     
-                    // Evaluate answer
-                    const score = evaluateAnswer(llmResponse, question.a);
+                    try {
+                        // Call real LLM - let it fail naturally if Ollama is down
+                        llmResponse = await callLLM(prompt, question);
+                        
+                        // Evaluate answer
+                        score = evaluateAnswer(llmResponse, question.a);
+                        reward = score * 10 - 1; // -1 to 9 scale
+                        
+                        // Track successful question
+                        if (score >= 0.8) state.correctAnswers++;
+                        
+                        // Mark as available if successful
+                        state.ollamaAvailable = true;
+                        
+                    } catch (error) {
+                        console.error(`❌ Step failed for client ${state.clientId}:`, error.message);
+                        llmResponse = `ERROR: ${error.message}`;
+                        score = 0;
+                        reward = -10; // Heavy penalty for errors
+                        state.errorCount = (state.errorCount || 0) + 1;
+                        state.ollamaAvailable = false; // Mark as unavailable on error
+                    }
                     
-                    // Reward based on correctness
-                    const reward = score * 10 - 1; // -1 to 9 scale
+                    // Track total questions (success or failure)
+                    state.totalQuestions++;
                     
                     // Store result
                     state.lastPrompt = prompt;
                     state.lastResponse = llmResponse;
                     state.lastScore = score;
                     state.lastStrategy = strategy.name;
-                    
-                    // Track stats
-                    state.totalQuestions++;
-                    if (score >= 0.8) state.correctAnswers++;
                     
                     // Get next question
                     const nextQuestion = TRIVIA_QUESTIONS[
@@ -288,6 +327,7 @@
                         lastStrategy: '',
                         totalQuestions: 0,
                         correctAnswers: 0,
+                        errorCount: 0,
                         steps: 0,
                         clientId: clientId || 0,
                         ollamaAvailable: false
@@ -309,14 +349,20 @@
                 ctx.font = 'bold 14px system-ui';
                 ctx.fillText('🧠 LLM Agent', 10, 25);
                 
-                // Mode indicator
-                ctx.fillStyle = state.ollamaAvailable ? '#22c55e' : '#f59e0b';
+                // Status indicator
+                ctx.fillStyle = state.ollamaAvailable ? '#22c55e' : '#ef4444';
                 ctx.font = '10px system-ui';
                 ctx.fillText(
-                    state.ollamaAvailable ? '✓ Ollama' : '⚡ Mock',
-                    w - 60,
+                    state.ollamaAvailable ? '✓ Live' : '✗ Error',
+                    w - 50,
                     25
                 );
+                
+                // Error count if any
+                if (state.errorCount > 0) {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.fillText(`⚠ ${state.errorCount} errs`, w - 60, 40);
+                }
                 
                 // Question
                 ctx.font = '12px system-ui';
@@ -400,14 +446,19 @@
                 // Stats
                 ctx.fillStyle = '#1f2937';
                 ctx.font = '11px system-ui';
+                
+                const accuracy = state.totalQuestions > 0 ? 
+                    Math.round(state.correctAnswers / state.totalQuestions * 100) : 0;
+                const errorRate = state.totalQuestions > 0 ?
+                    Math.round((state.errorCount || 0) / state.totalQuestions * 100) : 0;
+                
                 ctx.fillText(
-                    `Accuracy: ${state.totalQuestions > 0 ? 
-                        Math.round(state.correctAnswers / state.totalQuestions * 100) : 0}%`,
+                    `Accuracy: ${accuracy}% | Errors: ${errorRate}%`,
                     10,
                     h - 20
                 );
                 ctx.fillText(
-                    `Questions: ${state.totalQuestions}`,
+                    `Questions: ${state.totalQuestions} | Errors: ${state.errorCount || 0}`,
                     10,
                     h - 5
                 );
@@ -415,22 +466,25 @@
             
             // Lifecycle hooks
             onClientInit: async (client) => {
-                console.log(`Client ${client.id} initializing...`);
+                console.log(`🔧 Client ${client.id} initializing...`);
                 const available = await checkOllamaAvailability();
                 client.state.ollamaAvailable = available;
+                window.ollamaDetected = available; // For status display
                 
                 if (!available) {
-                    console.warn(`⚠️ Client ${client.id}: Ollama not available. Start with: ollama run tinyllama`);
+                    console.error(`❌ Client ${client.id}: Ollama NOT available!`);
+                    console.error('   Make sure Ollama is running and qwen3:1.7b is installed');
                 } else {
-                    console.log(`✅ Client ${client.id}: Ollama connected`);
+                    console.log(`✅ Client ${client.id}: Ollama connected (qwen3:1.7b ready)`);
                 }
             },
             
             onEpisodeEnd: (client) => {
                 const accuracy = client.state.totalQuestions > 0 ?
                     (client.state.correctAnswers / client.state.totalQuestions * 100) : 0;
+                const errorCount = client.state.errorCount || 0;
                 
-                console.log(`Client ${client.id} episode complete: ${accuracy.toFixed(0)}% accuracy`);
+                console.log(`📊 Client ${client.id} episode complete: ${accuracy.toFixed(0)}% accuracy | ${errorCount} errors`);
             },
             
             onFederation: (globalModel, round) => {
@@ -451,25 +505,23 @@
             const instructionsDiv = document.createElement('div');
             instructionsDiv.className = 'info-box';
             instructionsDiv.innerHTML = `
-                <h3 style="margin-top:0">📋 Setup Instructions</h3>
-                <p><strong>⚡ Quick Start (Mock Mode):</strong> Just click "▶ Start Training" - works without Ollama!</p>
-                <p style="margin-top:10px"><strong>🎮 For Real LLM (Optional):</strong></p>
-                <p style="margin-left:20px"><strong>1. Install Ollama:</strong> <code>brew install ollama</code> (Mac) or download from ollama.ai</p>
-                <p style="margin-left:20px"><strong>2. Pull a tiny model:</strong> <code>ollama pull tinyllama</code> (1.1GB, fast)</p>
-                <p style="margin-left:20px"><strong>3. Alternatives:</strong> <code>phi</code>, <code>gemma:2b</code>, or <code>qwen:0.5b</code></p>
-                <p style="margin-left:20px"><strong>4. Run Ollama:</strong> Should auto-start, or run <code>ollama serve</code></p>
-                <p style="margin-left:20px"><strong>5. Refresh page</strong> - Will auto-detect Ollama!</p>
+                <h3 style="margin-top:0">🧠 Federated LLM Meta-Learning - Real Mode Only</h3>
+                <p><strong>✅ Status:</strong> ${window.ollamaDetected ? '🟢 Ollama Connected (qwen3:1.7b)' : '🔴 Ollama Not Detected'}</p>
+                <p style="margin-top:10px"><strong>🎮 Requirements:</strong></p>
+                <p style="margin-left:20px">✅ Ollama must be running</p>
+                <p style="margin-left:20px">✅ Model <code>qwen3:1.7b</code> must be installed</p>
+                <p style="margin-left:20px">✅ Check console (F12) for detailed logs</p>
                 <hr style="margin: 15px 0">
                 <h4>🎯 What's Happening:</h4>
                 <ul style="margin:0;padding-left:20px">
                     <li><strong>State:</strong> Question category (geography, math, science, etc.)</li>
                     <li><strong>Actions:</strong> 5 different prompt strategies (Direct, Think, Concise, Expert, Format)</li>
-                    <li><strong>Reward:</strong> Based on answer correctness (0-10 scale)</li>
+                    <li><strong>Reward:</strong> Based on LLM answer correctness (0-10 scale)</li>
                     <li><strong>Learning:</strong> RL discovers which prompts work best for each category</li>
                     <li><strong>Federation:</strong> Clients share learned prompting strategies</li>
                 </ul>
-                <p style="margin-top:15px"><strong>💡 Meta-Learning:</strong> The RL agent learns <em>how to use</em> the LLM effectively, 
-                not training the LLM itself!</p>
+                <p style="margin-top:15px"><strong>💡 Meta-Learning:</strong> The RL agent learns <em>how to use</em> the LLM effectively!</p>
+                <p style="margin-top:10px"><strong>⚠️ Note:</strong> No mock mode - all calls go to real LLM. Watch console for detailed logs.</p>
             `;
             
             const app = document.getElementById('app');
