@@ -9,7 +9,7 @@
 ## ✅ What Was Accomplished
 
 ### **5 Critical Fixes**
-1. ✅ **Epsilon convergence**: 0.05 → 0.01 (industry standard, proper exploitation)
+1. ✅ **Epsilon convergence**: 0.05 → 0.001 (ultra-low for near-pure exploitation)
 2. ✅ **Load checkpoint button**: Added visible UI control (was hidden)
 3. ✅ **Federation feedback**: Delta tracking + toast notifications (was silent)
 4. ✅ **Model persistence**: Dedicated DI module (was scattered)

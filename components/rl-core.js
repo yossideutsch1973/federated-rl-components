@@ -125,7 +125,7 @@ export const createTabularAgent = (config) => {
         gamma = 0.95,
         epsilon: initEpsilon = 0.2,
         epsilonDecay = 0.995,
-        minEpsilon = 0.01,
+        minEpsilon = 0.001,
         numActions = 2
     } = config;
 

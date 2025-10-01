@@ -57,7 +57,7 @@ export const createFederatedApp = (config) => {
         gamma = 0.95,
         epsilon = 0.2,
         epsilonDecay = 0.995,
-        minEpsilon = 0.01,
+        minEpsilon = 0.001,
         
         // Federation parameters
         autoFederate = false,

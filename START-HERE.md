@@ -121,7 +121,7 @@ createFederatedApp({
     alpha: 0.1,      // Learning rate
     gamma: 0.95,     // Discount factor
     epsilon: 0.3,    // Initial exploration
-    minEpsilon: 0.01, // Final exploration
+    minEpsilon: 0.001, // Final exploration
     
     // Environment (required)
     environment: {
@@ -231,7 +231,7 @@ Edit in your HTML file:
 alpha: 0.15,      // Higher = faster learning
 gamma: 0.95,      // Higher = value future more
 epsilon: 0.3,     // Higher = more exploration
-minEpsilon: 0.01  // Lower = purer exploitation
+minEpsilon: 0.001  // Lower = purer exploitation
 ```
 
 ### **Add New Action**
@@ -336,7 +336,7 @@ bucket = floor(x / bin_width)
 1. ✅ Model persistence module (DI pattern)
 2. ✅ Federation delta tracking
 3. ✅ Toast notification system
-4. ✅ Epsilon convergence fix (0.05→0.01)
+4. ✅ Epsilon convergence fix (0.05→0.001)
 5. ✅ Load checkpoint button
 
 **Known Limitations**:

@@ -92,7 +92,7 @@ A complete, reusable component library for federated reinforcement learning:
 ## 🐛 Fixed Issues (Oct 2025)
 
 ### **Critical Fixes**
-1. ✅ **Epsilon convergence**: 0.05 → 0.01 (proper exploitation)
+1. ✅ **Epsilon convergence**: 0.05 → 0.001 (ultra-low for near-pure exploitation)
 2. ✅ **Load checkpoint**: Added visible button (UX)
 3. ✅ **Federation feedback**: Delta stats + toast (visibility)
 4. ✅ **Inference mode**: Fixed `saveLatestModel` undefined error
@@ -182,7 +182,7 @@ createFederatedApp({ environment, render });
 ### **Files Updated**
 - `components/app-template.js` (refactored for persistence)
 - `components/federated-core.js` (added `computeModelDelta`)
-- `examples/rl-ball-catch-pure.html` (minEpsilon: 0.05→0.01)
+- `examples/rl-ball-catch-pure.html` (minEpsilon: 0.05→0.001)
 - `README.md` (complete rewrite)
 - `START-HERE.md` (complete rewrite)
 

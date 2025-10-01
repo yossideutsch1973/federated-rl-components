@@ -267,7 +267,7 @@ createFederatedRLApp({
     gamma: 0.99,       // Discount factor
     epsilon: 1.0,      // Initial exploration
     epsilonDecay: 0.995, // Decay rate
-    minEpsilon: 0.01   // Min exploration
+    minEpsilon: 0.001  // Min exploration
 });
 ```
 

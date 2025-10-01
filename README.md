@@ -134,7 +134,7 @@ createFederatedApp({
     alpha: 0.1,
     gamma: 0.95,
     epsilon: 0.3,
-    minEpsilon: 0.01,
+    minEpsilon: 0.001,
     environment,
     render
 });
@@ -172,7 +172,7 @@ createFederatedApp({
 ## 🎯 Recent Improvements (Oct 2025)
 
 ### **5 Major Fixes**
-1. ✅ **Epsilon convergence**: 0.05 → 0.01 (industry standard)
+1. ✅ **Epsilon convergence**: 0.05 → 0.001 (ultra-low for near-pure exploitation)
 2. ✅ **Load checkpoint button**: Discoverable model loading
 3. ✅ **Federation feedback**: Delta tracking + toast notifications
 4. ✅ **Model persistence**: Dedicated DI module

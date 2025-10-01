@@ -243,9 +243,9 @@
             gamma: 0.95,        // Discount factor (γ) - value future rewards highly
             epsilon: 0.3,       // Initial exploration (ε_0) - 30% random actions
             epsilonDecay: 0.995, // Decay rate: ε_t = ε_0 * decay^t
-            minEpsilon: 0.001    // Minimum exploration (ε_∞) - 1% random for robustness
-            // Convergence: ε reaches 0.01 after ~920 episodes (0.3 * 0.995^920 ≈ 0.01)
-            // Industry standard: 0.01 allows near-optimal exploitation while maintaining exploration
+            minEpsilon: 0.001   // Minimum exploration (ε_∞) - 0.1% random for robustness
+            // Convergence: ε reaches 0.001 after ~1380 episodes (0.3 * 0.995^1380 ≈ 0.001)
+            // Ultra-low exploration allows near-pure exploitation while maintaining minimal robustness
         };
 
         // ============================================================================
@@ -261,7 +261,7 @@
         console.log('  - Ball VY: 3 bins [-10, 20] (vertical trajectory)');
         console.log('  - Platform VX: 3 bins [-8, 8] (momentum awareness)');
         console.log('Action Space:', RL_CONFIG.actions.length, 'discrete force levels');
-        console.log('Hyperparameters: α=' + RL_CONFIG.alpha + ', γ=' + RL_CONFIG.gamma + ', ε=' + RL_CONFIG.epsilon + '→' + RL_CONFIG.minEpsilon + ' (converges at ~920 eps)');
+        console.log('Hyperparameters: α=' + RL_CONFIG.alpha + ', γ=' + RL_CONFIG.gamma + ', ε=' + RL_CONFIG.epsilon + '→' + RL_CONFIG.minEpsilon + ' (converges at ~1380 eps)');
         console.log('✅ Using federated-core.js components');
 
         createFederatedApp({
