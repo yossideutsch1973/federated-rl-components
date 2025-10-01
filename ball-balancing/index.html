@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ball Balancing - Federated RL Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-family: system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+        }
+        #app {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // ⚖️ BALL BALANCING - Refactored to use Component Library!
+        // From ~1000 lines → ~150 lines (85% reduction)
+
+        createFederatedApp({
+            name: 'Ball Balancing Platform',
+            subtitle: 'Keep the ball balanced • Heterogeneous physics • 16 clients learning together',
+            
+            numClients: 16,
+            canvasWidth: 300,
+            canvasHeight: 220,
+            
+            alpha: 0.1,
+            gamma: 0.95,
+            epsilon: 0.2,
+            autoFederate: false,
+            federationInterval: 100,
+            
+            environment: {
+                actions: ['LEFT', 'STAY', 'RIGHT'],
+                
+                getState: (s) => {
+                    const bx = Math.floor((s.ballX / s.canvasW) * 10);
+                    const by = Math.floor((s.ballY / 220) * 10);
+                    const vx = Math.floor((s.ballVx + 6) / 12 * 5);
+                    const vy = Math.floor((s.ballVy + 6) / 12 * 5);
+                    const px = Math.floor((s.platformX / s.canvasW) * 10);
+                    return `${bx},${by},${vx},${vy},${px}`;
+                },
+                
+                step: (s, action) => {
+                    // Heterogeneous gravity per client (±24% variation)
+                    const gravityVar = 1.0 + (s.clientId - 8) * 0.03;
+                    const g = s.gravity * gravityVar;
+                    
+                    // Move platform
+                    const moves = { 0: -8, 1: 0, 2: 8 };
+                    let px = s.platformX + moves[action];
+                    px = Math.max(0, Math.min(s.canvasW - s.platformW, px));
+                    
+                    // Ball physics
+                    let vy = s.ballVy + g;
+                    let vx = s.ballVx * s.friction;
+                    let x = s.ballX + vx;
+                    let y = s.ballY + vy;
+                    
+                    // Wall bounce
+                    if (x - s.ballRadius < 0 || x + s.ballRadius > s.canvasW) {
+                        vx = -vx * 0.7;
+                        x = Math.max(s.ballRadius, Math.min(s.canvasW - s.ballRadius, x));
+                    }
+                    
+                    // Platform collision
+                    const platformY = s.canvasH - 40;
+                    const onPlatform = y + s.ballRadius >= platformY &&
+                                      y + s.ballRadius <= platformY + 10 &&
+                                      x >= px && x <= px + s.platformW;
+                    if (onPlatform) {
+                        y = platformY - s.ballRadius;
+                        vy = -vy * 0.6;
+                        if (Math.abs(vy) < 1) vy = 0;
+                    }
+                    
+                    // Reward
+                    const dist = Math.abs(x - (px + s.platformW / 2));
+                    const centerBonus = Math.max(0, 10 - dist / 5);
+                    const fellOff = y > s.canvasH + s.ballRadius;
+                    const reward = fellOff ? -100 : centerBonus;
+                    const done = fellOff || s.steps >= s.maxSteps;
+                    
+                    return {
+                        state: {
+                            ...s,
+                            ballX: x, ballY: y, ballVx: vx, ballVy: vy,
+                            platformX: px, steps: s.steps + 1
+                        },
+                        reward,
+                        done
+                    };
+                },
+                
+                reset: (clientId) => ({
+                    ballX: 150 + (Math.random() - 0.5) * 100,
+                    ballY: 50,
+                    ballVx: (Math.random() - 0.5) * 4,
+                    ballVy: 0,
+                    platformX: 100,
+                    platformW: 80,
+                    canvasW: 300,
+                    canvasH: 220,
+                    ballRadius: 12,
+                    gravity: 0.5,
+                    friction: 0.98,
+                    maxSteps: 500,
+                    steps: 0,
+                    clientId: clientId || 0
+                })
+            },
+            
+            render: (ctx, s) => {
+                // Clear
+                ctx.fillStyle = '#f0f4f8';
+                ctx.fillRect(0, 0, s.canvasW, s.canvasH);
+                
+                // Platform
+                const platformY = s.canvasH - 40;
+                ctx.fillStyle = '#667eea';
+                ctx.fillRect(s.platformX, platformY, s.platformW, 10);
+                
+                // Platform shadow
+                ctx.fillStyle = 'rgba(102, 126, 234, 0.2)';
+                ctx.fillRect(s.platformX + 5, platformY + 10, s.platformW, 5);
+                
+                // Ball
+                const grad = ctx.createRadialGradient(
+                    s.ballX - 4, s.ballY - 4, 2, s.ballX, s.ballY, s.ballRadius
+                );
+                grad.addColorStop(0, '#ff6b6b');
+                grad.addColorStop(1, '#ee5a6f');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(s.ballX, s.ballY, s.ballRadius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Ball shadow
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                ctx.beginPath();
+                ctx.ellipse(s.ballX, s.canvasH - 30, s.ballRadius * 0.8, s.ballRadius * 0.3, 0, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Ground
+                ctx.fillStyle = '#cbd5e0';
+                ctx.fillRect(0, s.canvasH - 25, s.canvasW, 25);
+            },
+            
+            onEpisodeEnd: (client) => {
+                if (client.id === 0 && client.metrics.episodeCount % 100 === 0) {
+                    console.log(`Client 0: ${client.metrics.episodeCount} episodes`);
+                }
+            },
+            
+            onFederation: (model, round) => {
+                console.log(`✅ Round ${round}: ${Object.keys(model).length} states`);
+            }
+        });
+    </script>
+</body>
+</html>
+

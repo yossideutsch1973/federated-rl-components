@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cart-Pole with Physics Engine - Federated RL</title>
+    
+    <!-- Matter.js Physics Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+        import * as Physics from '../components/physics-engine.js';
+
+        // 🎯 CART-POLE WITH REAL PHYSICS ENGINE (Matter.js)!
+        // Real pendulum dynamics with constraint-based hinge!
+
+        createFederatedApp({
+            name: '⚡ Cart-Pole with Physics Engine',
+            subtitle: '🎮 Real Matter.js pendulum • 🧠 Federated RL • 8 clients learning',
+            
+            numClients: 8,
+            canvasWidth: 300,
+            canvasHeight: 250,
+            
+            alpha: 0.15,
+            gamma: 0.99,
+            epsilon: 0.3,
+            epsilonDecay: 0.995,
+            autoFederate: false,
+            federationInterval: 50,
+            
+            environment: {
+                actions: ['LEFT', 'RIGHT'],
+                
+                getState: (s) => {
+                    // State from Matter.js bodies
+                    const cart = Physics.getBodyState(s.cart);
+                    const pole = Physics.getBodyState(s.pole);
+                    
+                    // Discretize
+                    const x = Math.floor((cart.x / 300) * 10);
+                    const vx = Math.floor((cart.vx + 15) / 30 * 5);
+                    const theta = Math.floor((pole.angle + Math.PI/2) / Math.PI * 10);
+                    const omega = Math.floor((pole.angularVelocity + 5) / 10 * 5);
+                    
+                    return `${x},${vx},${theta},${omega}`;
+                },
+                
+                step: (s, action) => {
+                    // Apply force to cart
+                    const force = (action === 0 ? -0.006 : 0.006);
+                    Physics.applyForce(s.cart, force, 0);
+                    
+                    // Step physics
+                    s.world.step(16);
+                    
+                    // Get new state
+                    const cart = Physics.getBodyState(s.cart);
+                    const pole = Physics.getBodyState(s.pole);
+                    
+                    // Normalize pole angle to [-π, π]
+                    let angle = pole.angle % (2 * Math.PI);
+                    if (angle > Math.PI) angle -= 2 * Math.PI;
+                    if (angle < -Math.PI) angle += 2 * Math.PI;
+                    
+                    // Calculate reward
+                    const uprightness = Math.cos(angle) * 10; // Higher when vertical
+                    const stabilityBonus = Math.abs(pole.angularVelocity) < 0.5 ? 5 : 0;
+                    const positionPenalty = -Math.abs(cart.x - 150) * 0.02;
+                    const reward = uprightness + stabilityBonus + positionPenalty;
+                    
+                    // Check failure
+                    const cartOutOfBounds = cart.x < 50 || cart.x > 250;
+                    const poleFallen = Math.abs(angle) > Math.PI / 2;
+                    const done = cartOutOfBounds || poleFallen || s.steps >= 500;
+                    
+                    return {
+                        state: { ...s, steps: s.steps + 1 },
+                        reward,
+                        done
+                    };
+                },
+                
+                reset: (clientId) => {
+                    // Create physics world with heterogeneous gravity
+                    const world = Physics.createPhysicsWorld({
+                        width: 300,
+                        height: 250,
+                        gravity: 1.0 + (clientId - 4) * 0.05 // ±20% variation
+                    });
+                    
+                    // Create ground
+                    const ground = Physics.createWall(150, 240, 300, 20);
+                    world.addBody(ground);
+                    
+                    // Create cart
+                    const cart = Physics.createCart(
+                        150,
+                        215,
+                        40,
+                        15,
+                        { friction: 0.02, frictionAir: 0.01 }
+                    );
+                    world.addBody(cart);
+                    
+                    // Create pole (starts at random angle)
+                    const initialAngle = (Math.random() - 0.5) * 0.4; // ±23°
+                    const poleLength = 60;
+                    const pole = Physics.createPole(
+                        150,
+                        215 - 7.5 - poleLength / 2,
+                        poleLength,
+                        4,
+                        { 
+                            friction: 0.01,
+                            frictionAir: 0.001,
+                            density: 0.02
+                        }
+                    );
+                    Physics.setAngle(pole, initialAngle);
+                    world.addBody(pole);
+                    
+                    // Create hinge connecting cart and pole
+                    const hinge = Physics.createHinge(
+                        cart,
+                        pole,
+                        { x: 0, y: -7.5 }, // Top of cart
+                        { x: 0, y: poleLength / 2 }, // Bottom of pole
+                        { stiffness: 1, damping: 0.01 }
+                    );
+                    world.addBody(hinge);
+                    
+                    // Give initial angular velocity
+                    Matter.Body.setAngularVelocity(pole, (Math.random() - 0.5) * 0.4);
+                    
+                    return {
+                        world,
+                        cart,
+                        pole,
+                        ground,
+                        hinge,
+                        steps: 0,
+                        clientId: clientId || 0
+                    };
+                }
+            },
+            
+            render: (ctx, s) => {
+                // Clear
+                ctx.fillStyle = '#f0f9ff';
+                ctx.fillRect(0, 0, 300, 250);
+                
+                // Render ground
+                Physics.renderBody(ctx, s.ground, '#cbd5e0', '#94a3b8');
+                
+                // Track line
+                ctx.strokeStyle = '#94a3b8';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(50, 230);
+                ctx.lineTo(250, 230);
+                ctx.stroke();
+                
+                // Render cart
+                Physics.renderBody(ctx, s.cart, '#11998e', '#0d7a6f');
+                
+                // Render pole
+                const poleState = Physics.getBodyState(s.pole);
+                const isStable = Math.abs(poleState.angle % (2 * Math.PI) - Math.PI/2) < 0.3 ||
+                               Math.abs(poleState.angle % (2 * Math.PI) + Math.PI/2) < 0.3;
+                Physics.renderBody(ctx, s.pole, isStable ? '#22c55e' : '#ef4444', isStable ? '#16a34a' : '#dc2626');
+                
+                // Render hinge point
+                const cartState = Physics.getBodyState(s.cart);
+                ctx.fillStyle = '#334155';
+                ctx.beginPath();
+                ctx.arc(cartState.x, cartState.y - 7.5, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Info
+                ctx.fillStyle = '#334155';
+                ctx.font = '10px monospace';
+                const angle = ((poleState.angle * 180 / Math.PI) % 360).toFixed(0);
+                ctx.fillText(`θ: ${angle}°`, 10, 20);
+                ctx.fillText(`ω: ${poleState.angularVelocity.toFixed(2)}`, 10, 35);
+                
+                // Badge
+                ctx.fillStyle = '#22c55e';
+                ctx.font = 'bold 10px system-ui';
+                ctx.fillText('🎮 Physics', 230, 15);
+            },
+            
+            onClientInit: (client) => {
+                console.log(`Client ${client.id} physics world initialized`);
+            },
+            
+            onEpisodeEnd: (client) => {
+                if (client.id === 0 && client.metrics.episodeCount % 50 === 0) {
+                    console.log(`Client 0: Episode ${client.metrics.episodeCount}`);
+                }
+            },
+            
+            onFederation: (model, round) => {
+                console.log(`✅ Federation ${round}: ${Object.keys(model).length} states`);
+            }
+        });
+    </script>
+</body>
+</html>
+

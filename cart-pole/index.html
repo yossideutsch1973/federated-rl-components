@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cart-Pole Balance - Federated RL Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: #fff;
+            font-family: system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+        }
+        #app {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // 🎯 CART-POLE - Refactored to use Component Library!
+        // From ~900 lines → ~170 lines (81% reduction)
+
+        createFederatedApp({
+            name: 'Cart-Pole Inverted Pendulum',
+            subtitle: 'Balance the pole • Heterogeneous physics • 16 clients learning together',
+            
+            numClients: 16,
+            canvasWidth: 300,
+            canvasHeight: 220,
+            
+            alpha: 0.1,
+            gamma: 0.99,
+            epsilon: 0.3,
+            epsilonDecay: 0.995,
+            autoFederate: false,
+            federationInterval: 50,
+            
+            environment: {
+                actions: ['LEFT', 'RIGHT'],
+                
+                getState: (s) => {
+                    // Discretize: cart position, cart velocity, pole angle, pole angular velocity
+                    const x = Math.floor((s.x + 150) / 300 * 10);
+                    const vx = Math.floor((s.vx + 10) / 20 * 5);
+                    const theta = Math.floor((s.theta + 0.5) / 1.0 * 10);
+                    const omega = Math.floor((s.omega + 3) / 6 * 5);
+                    return `${x},${vx},${theta},${omega}`;
+                },
+                
+                step: (s, action) => {
+                    // Heterogeneous physics per client
+                    const gravityVar = 1.0 + (s.clientId - 8) * 0.02;
+                    const g = s.gravity * gravityVar;
+                    
+                    // Apply force
+                    const force = (action === 0 ? -1 : 1) * s.forceMax;
+                    
+                    // Simplified pendulum physics
+                    // θ̈ = (g/L)·sin(θ) - damping·θ̇ + cart_coupling
+                    const cartCoupling = force * 0.002;
+                    const angularAccel = (g / s.poleLength) * Math.sin(s.theta) - 
+                                       s.damping * s.omega + cartCoupling;
+                    
+                    let omega = s.omega + angularAccel * s.dt;
+                    let theta = s.theta + omega * s.dt;
+                    
+                    // Cart motion (simplified)
+                    const cartAccel = force * 0.1 - s.vx * s.friction;
+                    let vx = s.vx + cartAccel * s.dt;
+                    let x = s.x + vx * s.dt;
+                    
+                    // Boundaries
+                    if (x < -150) { x = -150; vx = 0; }
+                    if (x > 150) { x = 150; vx = 0; }
+                    
+                    // Reward
+                    const angleReward = Math.cos(theta) * 10; // Higher when upright
+                    const stabilityBonus = (Math.abs(omega) < 0.5) ? 5 : 0;
+                    const positionPenalty = -Math.abs(x) * 0.01;
+                    const reward = angleReward + stabilityBonus + positionPenalty;
+                    
+                    // Episode done?
+                    const failed = Math.abs(theta) > s.failAngle || s.steps >= s.maxSteps;
+                    
+                    return {
+                        state: {
+                            ...s,
+                            x, vx, theta, omega,
+                            steps: s.steps + 1
+                        },
+                        reward,
+                        done: failed
+                    };
+                },
+                
+                reset: (clientId) => {
+                    // Random initial angle (±23°) and angular velocity
+                    const initialAngle = (Math.random() - 0.5) * 0.4; // ±23°
+                    const initialOmega = (Math.random() - 0.5) * 0.6; // ±0.3
+                    
+                    return {
+                        x: 0,
+                        vx: 0,
+                        theta: initialAngle,
+                        omega: initialOmega,
+                        poleLength: 80,
+                        poleMass: 0.3,
+                        cartMass: 1.0,
+                        gravity: 15.0,      // Strong gravity for dramatic effect
+                        damping: 0.01,      // Low damping for free-fall effect
+                        friction: 0.05,
+                        forceMax: 30,
+                        dt: 0.08,           // Larger time step for visible motion
+                        failAngle: Math.PI / 2, // ±90°
+                        maxSteps: 500,
+                        steps: 0,
+                        clientId: clientId || 0
+                    };
+                }
+            },
+            
+            render: (ctx, s) => {
+                const w = 300, h = 220;
+                
+                // Clear
+                ctx.fillStyle = '#f0f9ff';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Ground
+                ctx.fillStyle = '#cbd5e0';
+                ctx.fillRect(0, h - 30, w, 30);
+                
+                // Track
+                ctx.strokeStyle = '#94a3b8';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(50, h - 30);
+                ctx.lineTo(250, h - 30);
+                ctx.stroke();
+                
+                // Cart position (map -150 to 150 → 50 to 250)
+                const cartX = 150 + s.x;
+                const cartY = h - 55;
+                
+                // Cart
+                ctx.fillStyle = '#11998e';
+                ctx.fillRect(cartX - 20, cartY, 40, 20);
+                ctx.strokeStyle = '#0d7a6f';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(cartX - 20, cartY, 40, 20);
+                
+                // Wheels
+                ctx.fillStyle = '#334155';
+                ctx.beginPath();
+                ctx.arc(cartX - 12, cartY + 20, 5, 0, Math.PI * 2);
+                ctx.arc(cartX + 12, cartY + 20, 5, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Pole
+                const poleEndX = cartX + Math.sin(s.theta) * s.poleLength;
+                const poleEndY = cartY - Math.cos(s.theta) * s.poleLength;
+                
+                // Pole color based on stability
+                const isStable = Math.abs(s.theta) < 0.2;
+                ctx.strokeStyle = isStable ? '#22c55e' : '#ef4444';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(cartX, cartY);
+                ctx.lineTo(poleEndX, poleEndY);
+                ctx.stroke();
+                
+                // Pole endpoint (mass)
+                ctx.fillStyle = isStable ? '#16a34a' : '#dc2626';
+                ctx.beginPath();
+                ctx.arc(poleEndX, poleEndY, 8, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Info text
+                ctx.fillStyle = '#334155';
+                ctx.font = '11px monospace';
+                ctx.fillText(`θ: ${(s.theta * 180 / Math.PI).toFixed(1)}°`, 10, 20);
+                ctx.fillText(`ω: ${s.omega.toFixed(2)}`, 10, 35);
+            },
+            
+            onEpisodeEnd: (client) => {
+                if (client.id === 0 && client.metrics.episodeCount % 50 === 0) {
+                    const avgReward = client.metrics.totalReward / client.metrics.episodeCount;
+                    console.log(`Client 0: ${client.metrics.episodeCount} episodes, Avg reward: ${avgReward.toFixed(1)}`);
+                }
+            },
+            
+            onFederation: (model, round) => {
+                console.log(`✅ Round ${round}: ${Object.keys(model).length} states`);
+            }
+        });
+    </script>
+</body>
+</html>
+

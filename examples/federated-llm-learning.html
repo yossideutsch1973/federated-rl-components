@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Federated LLM Learning - Meta-Learning via RL</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+        .badge {
+            display: inline-block;
+            background: #8b5cf6;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 5px 5px 10px 0;
+        }
+        .info-box {
+            background: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .client-panel {
+            background: #f9fafb;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .llm-response {
+            background: #fff;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        .success { color: #22c55e; font-weight: bold; }
+        .error { color: #ef4444; font-weight: bold; }
+        code {
+            background: #f3f4f6;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // 🧠 FEDERATED LLM LEARNING - Meta-Learning via RL!
+        // Each client uses Ollama LLM + RL to learn optimal prompting strategies
+        // Then federates this knowledge across all clients
+
+        // Trivia questions dataset
+        const TRIVIA_QUESTIONS = [
+            { q: "What is the capital of France?", a: "Paris", category: "geography" },
+            { q: "What is 2 + 2?", a: "4", category: "math" },
+            { q: "Who wrote Romeo and Juliet?", a: "Shakespeare", category: "literature" },
+            { q: "What is the largest planet in our solar system?", a: "Jupiter", category: "science" },
+            { q: "In what year did World War 2 end?", a: "1945", category: "history" },
+            { q: "What is the chemical symbol for water?", a: "H2O", category: "science" },
+            { q: "What is the capital of Japan?", a: "Tokyo", category: "geography" },
+            { q: "What is 10 * 10?", a: "100", category: "math" },
+            { q: "Who painted the Mona Lisa?", a: "Leonardo da Vinci", category: "art" },
+            { q: "What is the speed of light?", a: "299792458", category: "science" }
+        ];
+
+        // Prompt strategies (actions)
+        const PROMPT_STRATEGIES = [
+            { name: "Direct", template: (q) => `${q}\nAnswer:` },
+            { name: "Think", template: (q) => `${q}\nLet's think step by step and then provide the answer:` },
+            { name: "Concise", template: (q) => `${q}\nGive only the answer, nothing else:` },
+            { name: "Expert", template: (q) => `You are an expert. ${q}\nAnswer:` },
+            { name: "Format", template: (q) => `Question: ${q}\nProvide a brief, accurate answer:\nAnswer:` }
+        ];
+
+        // Ollama API configuration
+        const OLLAMA_CONFIG = {
+            baseURL: 'http://localhost:11434',
+            model: 'tinyllama', // or 'phi', 'gemma:2b', etc.
+            options: {
+                temperature: 0.1,
+                num_predict: 50
+            }
+        };
+
+        // Check if Ollama is available
+        async function checkOllamaAvailability() {
+            try {
+                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/tags`);
+                return response.ok;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Mock LLM responses (used when Ollama not available)
+        function mockLLM(prompt, question) {
+            // Simulate varying quality based on prompt strategy
+            const strategies = ['Direct', 'Think', 'Concise', 'Expert', 'Format'];
+            const strategyUsed = strategies.find(s => prompt.includes(s.toLowerCase()) || 
+                                                      prompt.includes('step by step') && s === 'Think' ||
+                                                      prompt.includes('only the answer') && s === 'Concise' ||
+                                                      prompt.includes('expert') && s === 'Expert');
+            
+            // Different strategies work better for different categories
+            const optimalMap = {
+                'geography': 'Concise',
+                'math': 'Think',
+                'science': 'Expert',
+                'literature': 'Direct',
+                'history': 'Format',
+                'art': 'Expert'
+            };
+            
+            const isOptimal = optimalMap[question.category] === strategyUsed;
+            const random = Math.random();
+            
+            // If using optimal strategy, higher chance of correct answer
+            if (isOptimal && random > 0.3) {
+                return question.a; // Correct answer
+            } else if (random > 0.6) {
+                return question.a; // Sometimes correct anyway
+            } else {
+                // Wrong answer variations
+                return `The answer is ${['unknown', 'not sure', '42', 'maybe'][Math.floor(random * 4)]}`;
+            }
+        }
+
+        // Call Ollama LLM (or mock if not available)
+        async function callLLM(prompt, question, useMock = false) {
+            if (useMock) {
+                // Simulate network delay
+                await new Promise(resolve => setTimeout(resolve, 100));
+                return mockLLM(prompt, question);
+            }
+            
+            try {
+                const response = await fetch(`${OLLAMA_CONFIG.baseURL}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: OLLAMA_CONFIG.model,
+                        prompt: prompt,
+                        stream: false,
+                        options: OLLAMA_CONFIG.options
+                    })
+                });
+                
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                return data.response.trim();
+            } catch (e) {
+                console.error('LLM call failed, using mock:', e);
+                // Fall back to mock on error
+                await new Promise(resolve => setTimeout(resolve, 100));
+                return mockLLM(prompt, question);
+            }
+        }
+
+        // Evaluate answer quality (simple string matching)
+        function evaluateAnswer(llmResponse, correctAnswer) {
+            const response = llmResponse.toLowerCase().trim();
+            const answer = correctAnswer.toLowerCase().trim();
+            
+            // Direct match
+            if (response === answer) return 1.0;
+            
+            // Contains the answer
+            if (response.includes(answer)) return 0.8;
+            
+            // Partial match (first few chars)
+            if (answer.length > 3 && response.startsWith(answer.substring(0, 3))) return 0.5;
+            
+            // Wrong
+            return 0.0;
+        }
+
+        // Create the federated LLM learning system
+        createFederatedApp({
+            name: '🧠 Federated LLM Meta-Learning',
+            subtitle: '🤖 Each client uses Ollama LLM • 🎯 RL learns optimal prompting • 🔄 Federation shares strategies',
+            
+            numClients: 4, // Start with 4 clients
+            canvasWidth: 400,
+            canvasHeight: 300,
+            
+            // RL parameters
+            alpha: 0.2,
+            gamma: 0.95,
+            epsilon: 0.3,
+            epsilonDecay: 0.98,
+            minEpsilon: 0.1,
+            
+            // Federation
+            autoFederate: false,
+            federationInterval: 10, // Federate every 10 questions
+            
+            environment: {
+                actions: PROMPT_STRATEGIES.map(s => s.name),
+                
+                // State: Question category
+                getState: (state) => {
+                    return state.currentQuestion.category;
+                },
+                
+                // Step: Ask LLM a question using selected prompt strategy
+                step: async (state, action) => {
+                    const strategy = PROMPT_STRATEGIES[action];
+                    const question = state.currentQuestion;
+                    
+                    // Build prompt
+                    const prompt = strategy.template(question.q);
+                    
+                    // Call LLM (use mock if Ollama not available)
+                    const useMock = !state.ollamaAvailable;
+                    const llmResponse = await callLLM(prompt, question, useMock);
+                    
+                    // Evaluate answer
+                    const score = evaluateAnswer(llmResponse, question.a);
+                    
+                    // Reward based on correctness
+                    const reward = score * 10 - 1; // -1 to 9 scale
+                    
+                    // Store result
+                    state.lastPrompt = prompt;
+                    state.lastResponse = llmResponse;
+                    state.lastScore = score;
+                    state.lastStrategy = strategy.name;
+                    
+                    // Track stats
+                    state.totalQuestions++;
+                    if (score >= 0.8) state.correctAnswers++;
+                    
+                    // Get next question
+                    const nextQuestion = TRIVIA_QUESTIONS[
+                        Math.floor(Math.random() * TRIVIA_QUESTIONS.length)
+                    ];
+                    
+                    return {
+                        state: {
+                            ...state,
+                            currentQuestion: nextQuestion,
+                            steps: state.steps + 1
+                        },
+                        reward,
+                        done: state.steps >= 20 // 20 questions per episode
+                    };
+                },
+                
+                // Reset: Start with a random question
+                reset: (clientId) => {
+                    const question = TRIVIA_QUESTIONS[
+                        Math.floor(Math.random() * TRIVIA_QUESTIONS.length)
+                    ];
+                    
+                    return {
+                        currentQuestion: question,
+                        lastPrompt: '',
+                        lastResponse: '',
+                        lastScore: 0,
+                        lastStrategy: '',
+                        totalQuestions: 0,
+                        correctAnswers: 0,
+                        steps: 0,
+                        clientId: clientId || 0,
+                        ollamaAvailable: false
+                    };
+                }
+            },
+            
+            // Custom rendering for LLM demo
+            render: (ctx, state) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                
+                // Clear
+                ctx.fillStyle = '#f9fafb';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Title
+                ctx.fillStyle = '#1f2937';
+                ctx.font = 'bold 14px system-ui';
+                ctx.fillText('🧠 LLM Agent', 10, 25);
+                
+                // Mode indicator
+                ctx.fillStyle = state.ollamaAvailable ? '#22c55e' : '#f59e0b';
+                ctx.font = '10px system-ui';
+                ctx.fillText(
+                    state.ollamaAvailable ? '✓ Ollama' : '⚡ Mock',
+                    w - 60,
+                    25
+                );
+                
+                // Question
+                ctx.font = '12px system-ui';
+                ctx.fillStyle = '#4b5563';
+                ctx.fillText('Question:', 10, 50);
+                
+                ctx.fillStyle = '#1f2937';
+                ctx.font = 'bold 11px system-ui';
+                const q = state.currentQuestion.q;
+                const maxWidth = w - 20;
+                const lines = [];
+                let currentLine = '';
+                q.split(' ').forEach(word => {
+                    const testLine = currentLine + word + ' ';
+                    const metrics = ctx.measureText(testLine);
+                    if (metrics.width > maxWidth && currentLine) {
+                        lines.push(currentLine);
+                        currentLine = word + ' ';
+                    } else {
+                        currentLine = testLine;
+                    }
+                });
+                lines.push(currentLine);
+                lines.forEach((line, i) => {
+                    ctx.fillText(line, 10, 70 + i * 15);
+                });
+                
+                // Category badge
+                ctx.fillStyle = '#8b5cf6';
+                ctx.fillRect(10, 110, 80, 20);
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 10px system-ui';
+                ctx.fillText(state.currentQuestion.category.toUpperCase(), 15, 123);
+                
+                // Last strategy used
+                if (state.lastStrategy) {
+                    ctx.fillStyle = '#4b5563';
+                    ctx.font = '11px system-ui';
+                    ctx.fillText(`Strategy: ${state.lastStrategy}`, 10, 150);
+                }
+                
+                // Last response
+                if (state.lastResponse) {
+                    ctx.fillStyle = '#6b7280';
+                    ctx.font = '10px monospace';
+                    const response = state.lastResponse.substring(0, 100) + 
+                                   (state.lastResponse.length > 100 ? '...' : '');
+                    
+                    const respLines = [];
+                    let respLine = '';
+                    response.split(' ').forEach(word => {
+                        const testLine = respLine + word + ' ';
+                        if (ctx.measureText(testLine).width > maxWidth && respLine) {
+                            respLines.push(respLine);
+                            respLine = word + ' ';
+                        } else {
+                            respLine = testLine;
+                        }
+                    });
+                    respLines.push(respLine);
+                    
+                    ctx.fillText('Response:', 10, 175);
+                    respLines.forEach((line, i) => {
+                        ctx.fillText(line, 10, 190 + i * 12);
+                    });
+                }
+                
+                // Score indicator
+                if (state.lastScore > 0) {
+                    ctx.fillStyle = state.lastScore >= 0.8 ? '#22c55e' : '#ef4444';
+                    ctx.fillRect(w - 80, 10, 70, 30);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 12px system-ui';
+                    ctx.fillText(
+                        state.lastScore >= 0.8 ? '✓ Correct' : '✗ Wrong',
+                        w - 72,
+                        28
+                    );
+                }
+                
+                // Stats
+                ctx.fillStyle = '#1f2937';
+                ctx.font = '11px system-ui';
+                ctx.fillText(
+                    `Accuracy: ${state.totalQuestions > 0 ? 
+                        Math.round(state.correctAnswers / state.totalQuestions * 100) : 0}%`,
+                    10,
+                    h - 20
+                );
+                ctx.fillText(
+                    `Questions: ${state.totalQuestions}`,
+                    10,
+                    h - 5
+                );
+            },
+            
+            // Lifecycle hooks
+            onClientInit: async (client) => {
+                console.log(`Client ${client.id} initializing...`);
+                const available = await checkOllamaAvailability();
+                client.state.ollamaAvailable = available;
+                
+                if (!available) {
+                    console.warn(`⚠️ Client ${client.id}: Ollama not available. Start with: ollama run tinyllama`);
+                } else {
+                    console.log(`✅ Client ${client.id}: Ollama connected`);
+                }
+            },
+            
+            onEpisodeEnd: (client) => {
+                const accuracy = client.state.totalQuestions > 0 ?
+                    (client.state.correctAnswers / client.state.totalQuestions * 100) : 0;
+                
+                console.log(`Client ${client.id} episode complete: ${accuracy.toFixed(0)}% accuracy`);
+            },
+            
+            onFederation: (globalModel, round) => {
+                const strategies = Object.keys(globalModel);
+                console.log(`✅ Federation ${round}: Shared strategies for ${strategies.length} question types`);
+                
+                // Show which strategies work best
+                strategies.forEach(category => {
+                    const qValues = globalModel[category];
+                    const bestStrategy = qValues.indexOf(Math.max(...qValues));
+                    console.log(`  ${category}: Best strategy = ${PROMPT_STRATEGIES[bestStrategy].name}`);
+                });
+            }
+        });
+
+        // Add instructions
+        setTimeout(() => {
+            const instructionsDiv = document.createElement('div');
+            instructionsDiv.className = 'info-box';
+            instructionsDiv.innerHTML = `
+                <h3 style="margin-top:0">📋 Setup Instructions</h3>
+                <p><strong>⚡ Quick Start (Mock Mode):</strong> Just click "▶ Start Training" - works without Ollama!</p>
+                <p style="margin-top:10px"><strong>🎮 For Real LLM (Optional):</strong></p>
+                <p style="margin-left:20px"><strong>1. Install Ollama:</strong> <code>brew install ollama</code> (Mac) or download from ollama.ai</p>
+                <p style="margin-left:20px"><strong>2. Pull a tiny model:</strong> <code>ollama pull tinyllama</code> (1.1GB, fast)</p>
+                <p style="margin-left:20px"><strong>3. Alternatives:</strong> <code>phi</code>, <code>gemma:2b</code>, or <code>qwen:0.5b</code></p>
+                <p style="margin-left:20px"><strong>4. Run Ollama:</strong> Should auto-start, or run <code>ollama serve</code></p>
+                <p style="margin-left:20px"><strong>5. Refresh page</strong> - Will auto-detect Ollama!</p>
+                <hr style="margin: 15px 0">
+                <h4>🎯 What's Happening:</h4>
+                <ul style="margin:0;padding-left:20px">
+                    <li><strong>State:</strong> Question category (geography, math, science, etc.)</li>
+                    <li><strong>Actions:</strong> 5 different prompt strategies (Direct, Think, Concise, Expert, Format)</li>
+                    <li><strong>Reward:</strong> Based on answer correctness (0-10 scale)</li>
+                    <li><strong>Learning:</strong> RL discovers which prompts work best for each category</li>
+                    <li><strong>Federation:</strong> Clients share learned prompting strategies</li>
+                </ul>
+                <p style="margin-top:15px"><strong>💡 Meta-Learning:</strong> The RL agent learns <em>how to use</em> the LLM effectively, 
+                not training the LLM itself!</p>
+            `;
+            
+            const app = document.getElementById('app');
+            app.insertBefore(instructionsDiv, app.firstChild.nextSibling);
+        }, 100);
+    </script>
+</body>
+</html>
+

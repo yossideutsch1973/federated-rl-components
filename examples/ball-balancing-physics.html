@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ball Balancing with Physics Engine - Federated RL</title>
+    
+    <!-- Matter.js Physics Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            color: #333;
+        }
+        .badge {
+            display: inline-block;
+            background: #22c55e;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+        import * as Physics from '../components/physics-engine.js';
+
+        // ⚖️ BALL BALANCING WITH REAL PHYSICS ENGINE (Matter.js)!
+        // Pure physics simulation - no manual physics code!
+
+        createFederatedApp({
+            name: '⚡ Ball Balancing with Physics Engine',
+            subtitle: '🎮 Real Matter.js physics • 🧠 Federated RL • 8 clients learning',
+            
+            numClients: 8,
+            canvasWidth: 300,
+            canvasHeight: 250,
+            
+            alpha: 0.15,
+            gamma: 0.95,
+            epsilon: 0.3,
+            epsilonDecay: 0.995,
+            autoFederate: false,
+            federationInterval: 100,
+            
+            environment: {
+                actions: ['LEFT', 'STAY', 'RIGHT'],
+                
+                getState: (s) => {
+                    // State from Matter.js bodies
+                    const ball = Physics.getBodyState(s.ball);
+                    const platform = Physics.getBodyState(s.platform);
+                    
+                    // Discretize
+                    const bx = Math.floor((ball.x / 300) * 10);
+                    const by = Math.floor((ball.y / 250) * 10);
+                    const vx = Math.floor((ball.vx + 10) / 20 * 5);
+                    const vy = Math.floor((ball.vy + 10) / 20 * 5);
+                    const px = Math.floor((platform.x / 300) * 10);
+                    
+                    return `${bx},${by},${vx},${vy},${px}`;
+                },
+                
+                step: (s, action) => {
+                    // Apply action to platform
+                    const moveForce = 0.002;
+                    const forces = { 0: -moveForce, 1: 0, 2: moveForce };
+                    Physics.applyForce(s.platform, forces[action], 0);
+                    
+                    // Constrain platform to horizontal movement
+                    const platformState = Physics.getBodyState(s.platform);
+                    if (platformState.x < 40) Physics.setPosition(s.platform, 40, platformState.y);
+                    if (platformState.x > 260) Physics.setPosition(s.platform, 260, platformState.y);
+                    Physics.setVelocity(s.platform, s.platform.velocity.x * 0.9, 0);
+                    
+                    // Step physics
+                    s.world.step(16);
+                    
+                    // Get new state
+                    const ball = Physics.getBodyState(s.ball);
+                    const platform = Physics.getBodyState(s.platform);
+                    
+                    // Calculate reward
+                    const distFromPlatformCenter = Math.abs(ball.x - platform.x);
+                    const centerBonus = Math.max(0, 10 - distFromPlatformCenter / 5);
+                    const heightBonus = ball.y < 200 ? 5 : 0;
+                    const fellOff = ball.y > 260 || ball.y < -10;
+                    const reward = fellOff ? -100 : centerBonus + heightBonus;
+                    
+                    const done = fellOff || s.steps >= 500;
+                    
+                    return {
+                        state: { ...s, steps: s.steps + 1 },
+                        reward,
+                        done
+                    };
+                },
+                
+                reset: (clientId) => {
+                    // Create physics world
+                    const world = Physics.createPhysicsWorld({
+                        width: 300,
+                        height: 250,
+                        gravity: 0.8 + (clientId - 4) * 0.05 // Heterogeneous gravity!
+                    });
+                    
+                    // Create ball
+                    const ball = Physics.createBall(
+                        150 + (Math.random() - 0.5) * 80,
+                        50,
+                        12,
+                        { restitution: 0.6, friction: 0.1 }
+                    );
+                    world.addBody(ball);
+                    
+                    // Create platform
+                    const platform = Physics.createPlatform(
+                        150,
+                        200,
+                        80,
+                        10,
+                        { isStatic: false, friction: 0.3 }
+                    );
+                    world.addBody(platform);
+                    
+                    // Create ground
+                    const ground = Physics.createWall(
+                        150,
+                        240,
+                        300,
+                        20,
+                        { friction: 0.5 }
+                    );
+                    world.addBody(ground);
+                    
+                    // Create walls
+                    const leftWall = Physics.createWall(0, 125, 10, 250);
+                    const rightWall = Physics.createWall(300, 125, 10, 250);
+                    world.addBody(leftWall);
+                    world.addBody(rightWall);
+                    
+                    return {
+                        world,
+                        ball,
+                        platform,
+                        ground,
+                        leftWall,
+                        rightWall,
+                        steps: 0,
+                        clientId: clientId || 0
+                    };
+                }
+            },
+            
+            render: (ctx, s) => {
+                // Clear
+                ctx.fillStyle = '#f0f9ff';
+                ctx.fillRect(0, 0, 300, 250);
+                
+                // Render ground
+                Physics.renderBody(ctx, s.ground, '#cbd5e0', '#94a3b8');
+                
+                // Render walls (invisible but present)
+                // Physics.renderBody(ctx, s.leftWall, '#e2e8f0', '#cbd5e0');
+                // Physics.renderBody(ctx, s.rightWall, '#e2e8f0', '#cbd5e0');
+                
+                // Render platform
+                Physics.renderBody(ctx, s.platform, '#667eea', '#5568d3');
+                
+                // Render ball
+                const ballState = Physics.getBodyState(s.ball);
+                const gradient = ctx.createRadialGradient(
+                    ballState.x - 4, ballState.y - 4, 2,
+                    ballState.x, ballState.y, 12
+                );
+                gradient.addColorStop(0, '#ff6b6b');
+                gradient.addColorStop(1, '#ee5a6f');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(ballState.x, ballState.y, 12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#dc2626';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // Badge
+                ctx.fillStyle = '#22c55e';
+                ctx.font = 'bold 10px system-ui';
+                ctx.fillText('🎮 Physics', 5, 15);
+            },
+            
+            onClientInit: (client) => {
+                const gravity = 0.8 + (client.id - 4) * 0.05;
+                console.log(`Client ${client.id} initialized with gravity: ${gravity.toFixed(2)}`);
+            },
+            
+            onEpisodeEnd: (client) => {
+                if (client.id === 0 && client.metrics.episodeCount % 50 === 0) {
+                    console.log(`Client 0: Episode ${client.metrics.episodeCount}`);
+                }
+            },
+            
+            onFederation: (model, round) => {
+                console.log(`✅ Federation ${round}: ${Object.keys(model).length} states`);
+            }
+        });
+    </script>
+</body>
+</html>
+

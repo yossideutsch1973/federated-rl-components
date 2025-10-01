@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Federated RL Learning Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover { background: #5568d3; }
+        .btn-secondary {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-secondary:hover { background: #38a169; }
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+        .btn-danger:hover { background: #e53e3e; }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .client-panel {
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 15px;
+            background: #f7fafc;
+        }
+        .client-header {
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #2d3748;
+            font-size: 1.1em;
+        }
+        canvas {
+            border: 2px solid #cbd5e0;
+            border-radius: 8px;
+            display: block;
+            margin: 10px auto;
+            background: white;
+        }
+        .metrics {
+            font-size: 14px;
+            color: #4a5568;
+            line-height: 1.6;
+        }
+        .global-panel {
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border: 2px solid #667eea;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .global-header {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        .cot-panel {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .cot-title {
+            font-weight: 700;
+            color: #856404;
+            margin-bottom: 8px;
+        }
+        .cot-content {
+            color: #856404;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .legend {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        .legend-box {
+            width: 20px;
+            height: 20px;
+            border: 1px solid #333;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚖️ Federated RL: Ball Balancing</h1>
+        <div class="subtitle">Watch AI Agents Learn to Balance a Ball on Moving Platforms</div>
+        
+        <div class="controls">
+            <button class="btn-primary" onclick="app.start()">▶ Start Training</button>
+            <button class="btn-secondary" onclick="app.federate()">🔄 Federate Models</button>
+            <button class="btn-danger" onclick="app.reset()">↻ Reset</button>
+        </div>
+
+        <div class="global-panel">
+            <div class="global-header">📊 Global Federated Model Statistics</div>
+            <div id="global-metrics" class="metrics" style="text-align: center;"></div>
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-box" style="background: #667eea;"></div>
+                    <span>Platform</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-box" style="background: #ff6b6b;"></div>
+                    <span>Ball</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-box" style="background: #51cf66;"></div>
+                    <span>Success Zone</span>
+                </div>
+                <div class="legend-item">
+                    <span>🎯 Goal: Keep ball centered on platform</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="cot-panel">
+            <div class="cot-title">🧠 Chain-of-Thought: How Federated RL Works</div>
+            <div class="cot-content" id="cot-display">
+                <strong>Step 1:</strong> Ball falls due to gravity, agent moves platform (LEFT/STAY/RIGHT)<br>
+                <strong>Step 2:</strong> Reward = -|ball_x - platform_center|² (closer = better)<br>
+                <strong>Step 3:</strong> Q-learning updates: Q(s,a) ← Q(s,a) + α[r + γ·max(Q(s',a')) - Q(s,a)]<br>
+                <strong>Step 4:</strong> Each client learns privately, then shares model parameters<br>
+                <strong>Step 5:</strong> Server aggregates: θ_global = Σ(n_k/n)·θ_k, distributes back
+            </div>
+        </div>
+
+        <div class="grid-container" id="clients-container"></div>
+    </div>
+
+    <script>
+        /**
+         * ITERATION 3 - FINAL VERSION (Team Review Complete)
+         * 
+         * Prompt Engineer: Added CoT reasoning, clear role definitions
+         * Software Engineer: Ensured modularity, DI pattern, error handling, reusability
+         * AI Researcher: Incorporated 2025 federated learning + RL best practices
+         * 
+         * ARCHITECTURE:
+         * - Pure functional core for math operations
+         * - Dependency injection for configuration
+         * - Error boundaries with graceful degradation
+         * - Modular, reusable components
+         * 
+         * DEMO USAGE (Ball Balancing Task):
+         * const config = createConfig({ canvasWidth: 400, numClients: 4 });
+         * const env = createEnvironment(config);
+         * const clients = createClients(config, env);
+         * const federatedSystem = createFederatedSystem(clients, config);
+         * federatedSystem.start(); // Begin training
+         * federatedSystem.federate(); // Aggregate models
+         */
+
+        // ============================================================================
+        // PURE FUNCTIONAL CORE - Math Operations
+        // ============================================================================
+
+        /**
+         * Q-Learning Update Rule (Pure Function)
+         * Q(s,a) ← Q(s,a) + α[r + γ·max_a'(Q(s',a')) - Q(s,a)]
+         * @pure
+         */
+        const updateQValue = (currentQ, reward, maxNextQ, alpha, gamma) => {
+            try {
+                const tdError = reward + gamma * maxNextQ - currentQ;
+                return currentQ + alpha * tdError;
+            } catch (e) {
+                console.error('Q-value update failed:', e);
+                return currentQ; // Graceful degradation
+            }
+        };
+
+        /**
+         * Epsilon-Greedy Action Selection (Pure Function)
+         * π(s) = argmax_a Q(s,a) with probability 1-ε, random otherwise
+         * @pure
+         */
+        const selectAction = (qValues, epsilon, random = Math.random) => {
+            try {
+                if (random() < epsilon) {
+                    return Math.floor(random() * qValues.length);
+                }
+                return qValues.reduce((maxIdx, val, idx, arr) => 
+                    val > arr[maxIdx] ? idx : maxIdx, 0);
+            } catch (e) {
+                console.error('Action selection failed:', e);
+                return 0; // Default to first action
+            }
+        };
+
+        /**
+         * Federated Averaging (Pure Function)
+         * θ_global = Σ(n_k / n) · θ_k where n_k is local data size
+         * @pure
+         */
+        const federatedAverage = (models, weights = null) => {
+            try {
+                if (!models || models.length === 0) {
+                    throw new Error('No models to aggregate');
+                }
+                
+                const n = models.length;
+                const uniformWeights = weights || models.map(() => 1 / n);
+                
+                // Deep clone first model structure
+                const avgModel = JSON.parse(JSON.stringify(models[0]));
+                
+                // Average each Q-value across all models
+                Object.keys(avgModel).forEach(state => {
+                    avgModel[state] = avgModel[state].map((_, actionIdx) => {
+                        const weightedSum = models.reduce((sum, model, clientIdx) => {
+                            return sum + (model[state]?.[actionIdx] || 0) * uniformWeights[clientIdx];
+                        }, 0);
+                        return weightedSum;
+                    });
+                });
+                
+                return avgModel;
+            } catch (e) {
+                console.error('Federated averaging failed:', e);
+                return models[0]; // Fallback to first model
+            }
+        };
+
+        /**
+         * Calculate Reward Function (Pure Function)
+         * r(s) = -|ball_x - platform_center|² - 100*fell_off
+         * @pure
+         */
+        const calculateReward = (ballX, platformX, platformWidth, canvasWidth, fellOff) => {
+            if (fellOff) return -100;
+            const platformCenter = platformX + platformWidth / 2;
+            const distance = Math.abs(ballX - platformCenter);
+            const normalizedDistance = distance / (canvasWidth / 2);
+            return 10 - (normalizedDistance * normalizedDistance * 10);
+        };
+
+        // ============================================================================
+        // CONFIGURATION & DEPENDENCY INJECTION
+        // ============================================================================
+
+        const createConfig = (overrides = {}) => ({
+            canvasWidth: 400,
+            canvasHeight: 300,
+            numClients: 4,
+            platformWidth: 80,
+            platformHeight: 15,
+            platformSpeed: 8,
+            ballRadius: 10,
+            gravity: 0.5,
+            bounceFactor: 0.7,
+            learningRate: 0.1,      // α in Q-learning
+            discountFactor: 0.95,   // γ in Q-learning
+            epsilon: 0.3,            // ε in ε-greedy
+            epsilonDecay: 0.998,
+            minEpsilon: 0.05,
+            maxSteps: 300,
+            trainingSpeed: 50,      // ms between steps
+            ...overrides
+        });
+
+        // ============================================================================
+        // ENVIRONMENT MODULE (Reusable)
+        // ============================================================================
+
+        const createEnvironment = (config) => {
+            const actions = [
+                { move: -config.platformSpeed, name: 'LEFT' },
+                { move: 0, name: 'STAY' },
+                { move: config.platformSpeed, name: 'RIGHT' }
+            ];
+
+            const discretize = (value, bins, min, max) => {
+                const normalized = (value - min) / (max - min);
+                const bin = Math.floor(normalized * bins);
+                return Math.max(0, Math.min(bins - 1, bin));
+            };
+
+            const stateToString = (ballX, ballY, ballVx, ballVy, platformX) => {
+                // Discretize continuous state into bins for Q-table
+                const ballXBin = discretize(ballX, 8, 0, config.canvasWidth);
+                const ballYBin = discretize(ballY, 4, 0, config.canvasHeight);
+                const ballVxBin = discretize(ballVx + 10, 5, -10, 10);
+                const ballVyBin = discretize(ballVy + 10, 5, -10, 10);
+                const platformXBin = discretize(platformX, 8, 0, config.canvasWidth - config.platformWidth);
+                return `${ballXBin},${ballYBin},${ballVxBin},${ballVyBin},${platformXBin}`;
+            };
+
+            const updateBallPhysics = (ball, platform, config) => {
+                // Apply gravity
+                ball.vy += config.gravity;
+                
+                // Update position
+                ball.x += ball.vx;
+                ball.y += ball.vy;
+                
+                // Platform collision
+                const platformY = config.canvasHeight - config.platformHeight - 20;
+                if (ball.y + config.ballRadius >= platformY && 
+                    ball.y - config.ballRadius <= platformY + config.platformHeight &&
+                    ball.x >= platform.x && 
+                    ball.x <= platform.x + config.platformWidth) {
+                    
+                    ball.y = platformY - config.ballRadius;
+                    ball.vy = -ball.vy * config.bounceFactor;
+                    ball.vx *= 0.95; // Friction
+                }
+                
+                // Wall collisions
+                if (ball.x - config.ballRadius < 0) {
+                    ball.x = config.ballRadius;
+                    ball.vx = -ball.vx * 0.8;
+                } else if (ball.x + config.ballRadius > config.canvasWidth) {
+                    ball.x = config.canvasWidth - config.ballRadius;
+                    ball.vx = -ball.vx * 0.8;
+                }
+                
+                // Check if ball fell off
+                const fellOff = ball.y > config.canvasHeight + config.ballRadius;
+                
+                return fellOff;
+            };
+
+            return {
+                actions,
+                stateToString,
+                updateBallPhysics
+            };
+        };
+
+        // ============================================================================
+        // RL AGENT MODULE (Reusable)
+        // ============================================================================
+
+        const createAgent = (config, env) => {
+            let qTable = {};
+            let epsilon = config.epsilon;
+
+            const initQTable = (state) => {
+                if (!qTable[state]) {
+                    qTable[state] = Array(env.actions.length).fill(0);
+                }
+            };
+
+            const getQValues = (state) => {
+                initQTable(state);
+                return qTable[state];
+            };
+
+            const chooseAction = (state) => {
+                const qValues = getQValues(state);
+                return selectAction(qValues, epsilon);
+            };
+
+            const learn = (state, action, reward, nextState) => {
+                try {
+                    initQTable(state);
+                    initQTable(nextState);
+                    
+                    const currentQ = qTable[state][action];
+                    const maxNextQ = Math.max(...qTable[nextState]);
+                    
+                    qTable[state][action] = updateQValue(
+                        currentQ, 
+                        reward, 
+                        maxNextQ, 
+                        config.learningRate, 
+                        config.discountFactor
+                    );
+                } catch (e) {
+                    console.error('Learning step failed:', e);
+                }
+            };
+
+            const decayEpsilon = () => {
+                epsilon = Math.max(config.minEpsilon, epsilon * config.epsilonDecay);
+            };
+
+            const getModel = () => ({ ...qTable });
+            
+            const setModel = (newModel) => {
+                qTable = { ...newModel };
+            };
+
+            return {
+                getQValues,
+                chooseAction,
+                learn,
+                decayEpsilon,
+                getModel,
+                setModel,
+                getEpsilon: () => epsilon
+            };
+        };
+
+        // ============================================================================
+        // FEDERATED CLIENT MODULE (Reusable)
+        // ============================================================================
+
+        const createClient = (id, config, env) => {
+            const agent = createAgent(config, env);
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = config.canvasWidth;
+            canvas.height = config.canvasHeight;
+
+            let ball = {
+                x: config.canvasWidth / 2,
+                y: 50,
+                vx: (Math.random() - 0.5) * 4,
+                vy: 0
+            };
+            
+            let platform = {
+                x: config.canvasWidth / 2 - config.platformWidth / 2,
+                y: config.canvasHeight - config.platformHeight - 20
+            };
+            
+            let totalReward = 0;
+            let episodeCount = 0;
+            let stepCount = 0;
+            let successfulSteps = 0;
+            let avgBalance = 0;
+
+            const reset = () => {
+                ball = {
+                    x: config.canvasWidth / 2 + (Math.random() - 0.5) * 100,
+                    y: 50,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: 0
+                };
+                platform.x = config.canvasWidth / 2 - config.platformWidth / 2;
+                stepCount = 0;
+                episodeCount++;
+                agent.decayEpsilon();
+            };
+
+            const step = () => {
+                try {
+                    if (stepCount >= config.maxSteps) {
+                        reset();
+                        return { done: true, reward: 0 };
+                    }
+
+                    // Get current state
+                    const state = env.stateToString(ball.x, ball.y, ball.vx, ball.vy, platform.x);
+                    
+                    // Choose action
+                    const action = agent.chooseAction(state);
+                    
+                    // Apply action (move platform)
+                    platform.x += env.actions[action].move;
+                    platform.x = Math.max(0, Math.min(config.canvasWidth - config.platformWidth, platform.x));
+                    
+                    // Update physics
+                    const fellOff = env.updateBallPhysics(ball, platform, config);
+                    
+                    // Calculate reward
+                    const reward = calculateReward(ball.x, platform.x, config.platformWidth, config.canvasWidth, fellOff);
+                    totalReward += reward;
+                    
+                    // Track balance quality
+                    if (!fellOff && reward > 5) {
+                        successfulSteps++;
+                    }
+                    avgBalance = successfulSteps / (stepCount + 1);
+                    
+                    // Get next state
+                    const nextState = env.stateToString(ball.x, ball.y, ball.vx, ball.vy, platform.x);
+                    
+                    // Learn
+                    agent.learn(state, action, reward, nextState);
+                    
+                    stepCount++;
+                    
+                    // Reset if ball fell
+                    if (fellOff) {
+                        reset();
+                        return { done: true, reward };
+                    }
+
+                    return { done: false, reward };
+                } catch (e) {
+                    console.error(`Client ${id} step failed:`, e);
+                    return { done: true, reward: 0 };
+                }
+            };
+
+            const render = () => {
+                try {
+                    // Clear canvas
+                    ctx.fillStyle = '#f8f9fa';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Draw success zone indicator
+                    const platformCenter = platform.x + config.platformWidth / 2;
+                    const successZone = config.platformWidth / 3;
+                    ctx.fillStyle = 'rgba(81, 207, 102, 0.2)';
+                    ctx.fillRect(platformCenter - successZone, 0, successZone * 2, canvas.height);
+                    
+                    // Draw center line
+                    ctx.strokeStyle = '#dee2e6';
+                    ctx.setLineDash([5, 5]);
+                    ctx.beginPath();
+                    ctx.moveTo(platformCenter, 0);
+                    ctx.lineTo(platformCenter, canvas.height);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    
+                    // Draw platform
+                    ctx.fillStyle = '#667eea';
+                    ctx.shadowColor = 'rgba(0,0,0,0.2)';
+                    ctx.shadowBlur = 10;
+                    ctx.fillRect(platform.x, platform.y, config.platformWidth, config.platformHeight);
+                    ctx.shadowBlur = 0;
+                    
+                    // Draw platform indicator arrow
+                    ctx.fillStyle = '#4c51bf';
+                    ctx.font = 'bold 20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('▲', platformCenter, platform.y - 5);
+                    
+                    // Draw ball
+                    if (ball.y < config.canvasHeight + config.ballRadius) {
+                        ctx.fillStyle = '#ff6b6b';
+                        ctx.beginPath();
+                        ctx.arc(ball.x, ball.y, config.ballRadius, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Ball shadow
+                        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+                        ctx.beginPath();
+                        ctx.ellipse(ball.x, platform.y + config.platformHeight + 5, 
+                                   config.ballRadius * 0.8, config.ballRadius * 0.3, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    
+                    // Draw score overlay
+                    const distance = Math.abs(ball.x - platformCenter);
+                    const performance = Math.max(0, 100 - (distance / config.platformWidth) * 100);
+                    
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    ctx.fillRect(5, 5, 100, 60);
+                    ctx.fillStyle = '#2d3748';
+                    ctx.font = 'bold 12px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('Balance:', 10, 20);
+                    ctx.fillStyle = performance > 70 ? '#51cf66' : performance > 40 ? '#fcc419' : '#ff6b6b';
+                    ctx.font = 'bold 18px Arial';
+                    ctx.fillText(performance.toFixed(0) + '%', 10, 40);
+                    ctx.fillStyle = '#718096';
+                    ctx.font = '10px Arial';
+                    ctx.fillText('Step: ' + stepCount, 10, 55);
+                    
+                } catch (e) {
+                    console.error(`Client ${id} render failed:`, e);
+                }
+            };
+
+            // Initial render
+            render();
+
+            return {
+                id,
+                canvas,
+                step,
+                render,
+                reset,
+                getAgent: () => agent,
+                getMetrics: () => ({
+                    totalReward,
+                    episodeCount,
+                    epsilon: agent.getEpsilon(),
+                    qTableSize: Object.keys(agent.getModel()).length,
+                    avgBalance: (avgBalance * 100).toFixed(1)
+                })
+            };
+        };
+
+        // ============================================================================
+        // FEDERATED LEARNING SYSTEM (Reusable)
+        // ============================================================================
+
+        const createFederatedSystem = (clients, config) => {
+            let isTraining = false;
+            let trainingInterval = null;
+            let federationRound = 0;
+
+            const trainStep = () => {
+                clients.forEach(client => {
+                    client.step();
+                    client.render();
+                });
+                updateUI();
+            };
+
+            const start = () => {
+                if (isTraining) return;
+                isTraining = true;
+                trainingInterval = setInterval(trainStep, config.trainingSpeed);
+                updateCoT('Training active: Clients learning independently...');
+            };
+
+            const stop = () => {
+                isTraining = false;
+                if (trainingInterval) {
+                    clearInterval(trainingInterval);
+                    trainingInterval = null;
+                }
+            };
+
+            const federate = () => {
+                try {
+                    // Collect models from all clients
+                    const models = clients.map(c => c.getAgent().getModel());
+                    
+                    // Perform federated averaging
+                    const globalModel = federatedAverage(models);
+                    
+                    // Distribute global model back to clients
+                    clients.forEach(c => c.getAgent().setModel(globalModel));
+                    
+                    federationRound++;
+                    updateCoT(`Federation Round ${federationRound}: Models aggregated and distributed`);
+                    updateUI();
+                } catch (e) {
+                    console.error('Federation failed:', e);
+                    updateCoT('Federation failed: ' + e.message);
+                }
+            };
+
+            const reset = () => {
+                stop();
+                clients.forEach(c => c.reset());
+                federationRound = 0;
+                updateCoT('System reset: Ready for new training session');
+                updateUI();
+            };
+
+            const updateUI = () => {
+                const globalMetrics = document.getElementById('global-metrics');
+                const avgReward = clients.reduce((sum, c) => 
+                    sum + c.getMetrics().totalReward, 0) / clients.length;
+                const avgEpisodes = clients.reduce((sum, c) => 
+                    sum + c.getMetrics().episodeCount, 0) / clients.length;
+                const avgBalance = clients.reduce((sum, c) => 
+                    sum + parseFloat(c.getMetrics().avgBalance), 0) / clients.length;
+                
+                globalMetrics.innerHTML = `
+                    <strong>Federation Rounds:</strong> ${federationRound} | 
+                    <strong>Avg Balance:</strong> ${avgBalance.toFixed(1)}% | 
+                    <strong>Avg Reward:</strong> ${avgReward.toFixed(1)} | 
+                    <strong>Avg Episodes:</strong> ${avgEpisodes.toFixed(0)}
+                `;
+
+                clients.forEach(client => {
+                    const metrics = client.getMetrics();
+                    const metricsDiv = document.getElementById(`metrics-${client.id}`);
+                    if (metricsDiv) {
+                        metricsDiv.innerHTML = `
+                            <strong>Balance Score:</strong> ${metrics.avgBalance}%<br>
+                            <strong>Episodes:</strong> ${metrics.episodeCount}<br>
+                            <strong>Cumulative Reward:</strong> ${metrics.totalReward.toFixed(0)}<br>
+                            <strong>Exploration (ε):</strong> ${metrics.epsilon.toFixed(3)}<br>
+                            <strong>States Learned:</strong> ${metrics.qTableSize}
+                        `;
+                    }
+                });
+            };
+
+            const updateCoT = (message) => {
+                const cotDisplay = document.getElementById('cot-display');
+                const timestamp = new Date().toLocaleTimeString();
+                cotDisplay.innerHTML = `
+                    <strong>[${timestamp}]</strong> ${message}<br>
+                    ${cotDisplay.innerHTML}
+                `.split('<br>').slice(0, 8).join('<br>');
+            };
+
+            return { start, stop, federate, reset };
+        };
+
+        // ============================================================================
+        // APPLICATION INITIALIZATION (Demo Usage)
+        // ============================================================================
+
+        const initializeApp = () => {
+            try {
+                // Step 1: Create configuration with DI
+                const config = createConfig({
+                    canvasWidth: 400,
+                    canvasHeight: 300,
+                    numClients: 4,
+                    learningRate: 0.1,
+                    epsilon: 0.3
+                });
+
+                // Step 2: Create environment
+                const env = createEnvironment(config);
+
+                // Step 3: Create clients
+                const clients = Array.from({ length: config.numClients }, (_, i) =>
+                    createClient(i, config, env)
+                );
+
+                // Step 4: Setup UI
+                const container = document.getElementById('clients-container');
+                clients.forEach(client => {
+                    const panel = document.createElement('div');
+                    panel.className = 'client-panel';
+                    panel.innerHTML = `
+                        <div class="client-header">Client ${client.id}</div>
+                        <div id="metrics-${client.id}" class="metrics"></div>
+                    `;
+                    panel.appendChild(client.canvas);
+                    container.appendChild(panel);
+                    client.render();
+                });
+
+                // Step 5: Create federated system
+                const system = createFederatedSystem(clients, config);
+
+                return system;
+            } catch (e) {
+                console.error('App initialization failed:', e);
+                alert('Failed to initialize application: ' + e.message);
+                return null;
+            }
+        };
+
+        // ============================================================================
+        // GLOBAL APP INSTANCE (Demo Entry Point)
+        // ============================================================================
+
+        const app = initializeApp();
+
+        // Auto-start demo
+        window.addEventListener('load', () => {
+            if (app) {
+                setTimeout(() => app.start(), 500);
+            }
+        });
+
+        /**
+         * REUSABILITY DEMO:
+         * 
+         * // Create custom configuration for different physics
+         * const customConfig = createConfig({ 
+         *     canvasWidth: 600,
+         *     canvasHeight: 400,
+         *     platformWidth: 100,
+         *     gravity: 0.8,
+         *     numClients: 6,
+         *     learningRate: 0.15 
+         * });
+         * 
+         * // Create environment and agents
+         * const env = createEnvironment(customConfig);
+         * const agent = createAgent(customConfig, env);
+         * 
+         * // Use pure functions directly
+         * const qValue = updateQValue(0, 10, 5, 0.1, 0.95);
+         * const action = selectAction([1, 2, 3], 0.2);
+         * const reward = calculateReward(200, 150, 80, 400, false);
+         * 
+         * // Create custom federated system
+         * const clients = [createClient(0, customConfig, env)];
+         * const system = createFederatedSystem(clients, customConfig);
+         * system.start();
+         * system.federate();
+         */
+    </script>
+</body>
+</html>

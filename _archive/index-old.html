@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pro Trader Dashboard — Single Page App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0f1218;
+      --panel: #141925;
+      --panel-2: #0e1420;
+      --text: #e6ebff;
+      --muted: #94a3b8;
+      --accent: #4f8cff;
+      --accent-2: #22d3ee;
+      --danger: #ff5577;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --grid: #1f2937;
+      --shadow: rgba(0,0,0,0.3);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 20% -20%, #182034 0%, var(--bg) 50%) fixed;
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .app {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      grid-template-rows: 56px 1fr;
+      grid-template-areas:
+        "nav header"
+        "nav main";
+      height: 100%;
+    }
+    header {
+      grid-area: header;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: linear-gradient(180deg, #0f1624, var(--panel));
+      border-bottom: 1px solid #1e293b;
+      box-shadow: 0 4px 16px var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; letter-spacing: 0.3px;
+    }
+    .brand .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, var(--accent-2), var(--accent));
+      box-shadow: 0 0 12px var(--accent-2);
+    }
+    nav {
+      grid-area: nav;
+      padding: 12px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border-right: 1px solid #1e293b;
+      overflow: auto;
+    }
+    main {
+      grid-area: main;
+      padding: 12px;
+      overflow: auto;
+    }
+    .section {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.00));
+      border: 1px solid #1f2a44;
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 6px 18px var(--shadow);
+    }
+    .row { display: grid; grid-template-columns: 1fr 380px; gap: 12px; }
+    .col { display: grid; gap: 12px; }
+    .toolbar {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    .toolbar .spacer { flex: 1; }
+    .pill {
+      border: 1px solid #2b3a5a;
+      background: #0e1420;
+      padding: 6px 10px;
+      border-radius: 20px;
+      color: var(--muted);
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid #2b3a5a;
+      background: linear-gradient(180deg, #1b2438, #101625);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform .05s ease, background .2s ease, border-color .2s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: #385085; }
+    .btn:active { transform: translateY(0); }
+    .btn.ghost { background: transparent; }
+    .btn.accent { border-color: #3a5cc1; background: linear-gradient(180deg, #254094, #1d2f70); }
+    .tag { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid #2b3a5a; color: var(--muted); }
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat { background: #0d1422; border: 1px solid #1f2a44; border-radius: 12px; padding: 12px; }
+    .stat .label { color: var(--muted); font-size: 12px; }
+    .stat .value { font-size: 18px; font-weight: 700; }
+    .stat .trend.up { color: var(--success); }
+    .stat .trend.down { color: var(--danger); }
+    .panel {
+      background: #0e1523;
+      border: 1px solid #1f2a44;
+      border-radius: 12px;
+      padding: 12px;
+      display: grid; gap: 10px;
+    }
+    canvas {
+      width: 100%; height: 360px;
+      background:
+        linear-gradient(180deg, rgba(79,140,255,0.06), rgba(79,140,255,0.00) 28%),
+        repeating-linear-gradient(0deg, transparent 0 31px, rgba(255,255,255,0.03) 31px 32px),
+        repeating-linear-gradient(90deg, transparent 0 63px, rgba(255,255,255,0.02) 63px 64px);
+      border-radius: 12px;
+    }
+    .list { display: grid; gap: 8px; }
+    .list-item {
+      display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+      padding: 8px; border-radius: 8px; border: 1px solid #1f2a44; background: #0b1020;
+    }
+    .price.up { color: var(--success); }
+    .price.down { color: var(--danger); }
+    .kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      background: #0c1220;
+      border: 1px solid #263453;
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .small { font-size: 12px; color: var(--muted); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .error { color: var(--danger); }
+    .success { color: var(--success); }
+    .warn { color: var(--warning); }
+    .footer-note { color: var(--muted); font-size: 11px; text-align: center; padding-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <nav>
+      <div class="section" style="display:grid;gap:10px">
+        <div class="brand"><div class="dot"></div> Pro Trader</div>
+        <div class="small">Daily dashboard — signals, risk, and execution</div>
+        <div class="pill">
+          <strong>Session</strong>
+          <span id="auth-status" class="tag">signed-out</span>
+        </div>
+        <div class="grid-2">
+          <button id="btn-login" class="btn accent">OAuth Login</button>
+          <button id="btn-logout" class="btn ghost">Logout</button>
+        </div>
+        <button id="btn-run-tests" class="btn">Run Tests</button>
+        <div id="test-result" class="small"></div>
+        <div class="section" style="border-radius:8px">
+          <div class="small">Indicators</div>
+          <div class="list" id="indicator-toggles"></div>
+        </div>
+      </div>
+    </nav>
+
+    <header>
+      <div class="brand">
+        <div class="dot"></div>
+        <div>Trader Dashboard</div>
+        <span class="tag">v1.0</span>
+      </div>
+      <div class="toolbar">
+        <span class="pill">
+          Symbol
+          <select id="symbol" class="btn" style="padding:6px 10px">
+            <option>ES</option>
+            <option>NQ</option>
+            <option>CL</option>
+            <option>GC</option>
+            <option>BTCUSD</option>
+          </select>
+        </span>
+        <span class="pill">
+          Interval
+          <select id="interval" class="btn" style="padding:6px 10px">
+            <option>1m</option>
+            <option selected>5m</option>
+            <option>15m</option>
+            <option>1h</option>
+            <option>1d</option>
+          </select>
+        </span>
+        <div class="spacer"></div>
+        <span class="pill">
+          Risk <span id="risk-tag" class="tag">balanced</span>
+        </span>
+        <button id="export-png" class="btn">Export Chart PNG</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="row">
+        <div class="col">
+          <div class="stat-grid">
+            <div class="stat">
+              <div class="label">Net PnL (day)</div>
+              <div id="stat-pnl" class="value">$0</div>
+              <div id="stat-pnl-trend" class="small trend">—</div>
+            </div>
+            <div class="stat">
+              <div class="label">Win Rate</div>
+              <div id="stat-win" class="value">0%</div>
+              <div class="small">last 20 trades</div>
+            </div>
+            <div class="stat">
+              <div class="label">Max Drawdown</div>
+              <div id="stat-dd" class="value">0%</div>
+              <div class="small">intraday</div>
+            </div>
+            <div class="stat">
+              <div class="label">Exposure</div>
+              <div id="stat-exp" class="value">0%</div>
+              <div class="small">portfolio</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="toolbar">
+              <div>
+                <span class="pill">Chart <span id="chart-title" class="tag">—</span></span>
+              </div>
+              <div class="spacer"></div>
+              <div class="small">Toggle indicators in sidebar</div>
+            </div>
+            <canvas id="chart" width="1280" height="400"></canvas>
+            <div class="small">Hints: Hold <span class="kbd">Shift</span> to pan, <span class="kbd">⌘/Ctrl</span> + wheel to zoom.</div>
+          </div>
+
+          <div class="grid-2">
+            <div class="panel">
+              <div class="toolbar">
+                <strong>Positions</strong>
+                <div class="spacer"></div>
+                <span class="tag">paper</span>
+              </div>
+              <div class="list" id="positions"></div>
+            </div>
+            <div class="panel">
+              <div class="toolbar">
+                <strong>Watchlist</strong>
+                <div class="spacer"></div>
+                <button id="btn-refresh" class="btn">Refresh</button>
+              </div>
+              <div class="list" id="watchlist"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col">
+          <div class="panel">
+            <div class="toolbar">
+              <strong>Commitment of Traders (CoT)</strong>
+              <div class="spacer"></div>
+              <span class="tag">step-by-step</span>
+            </div>
+            <div id="cot-steps" class="list"></div>
+          </div>
+
+            <div class="panel">
+            <div class="toolbar">
+              <strong>Execution</strong>
+              <div class="spacer"></div>
+              <span class="small">Demo only</span>
+            </div>
+            <div class="list">
+              <div class="list-item">
+                <div>
+                  <div class="small">Order Size</div>
+                  <input id="order-size" type="number" value="1" class="btn" style="width:100px" />
+                </div>
+                <button id="buy-mkt" class="btn accent">Buy MKT</button>
+                <button id="sell-mkt" class="btn">Sell MKT</button>
+              </div>
+              <div id="exec-status" class="small"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="toolbar">
+              <strong>Logs</strong>
+              <div class="spacer"></div>
+              <button id="btn-clear-logs" class="btn ghost">Clear</button>
+            </div>
+            <pre id="logs" style="margin:0;max-height:240px;overflow:auto;background:#0a0f1c;border:1px solid #1f2a44;border-radius:8px;padding:10px"></pre>
+          </div>
+        </div>
+      </div>
+      <div class="footer-note">Demo app for professional workflows. Not investment advice.</div>
+    </main>
+  </div>
+
+  <script>
+    // =========================================================================================
+    // Team CoT Review (Iteration 3 - Final)
+    // - Prompt Eng: Roles in comments; explicit step-by-step for CoT in UI; deterministic mocks.
+    // - SWE: Modular design, DI for services, OAuth class wrapping lib, pure functions for math,
+    //        robust error handling, small test runner, demo usage code.
+    // - AI Research: Chain-of-thought (visible to user as educational steps only), function
+    //        decomposition; edge-case tests for parsing and indicators. 2025 best practices:
+    //        "role prompting", "decomposition-first", "adversarial test seeds".
+    // =========================================================================================
+
+    // -----------------------------------------------------------------------------------------
+    // Utility: Functional helpers (pure)
+    // -----------------------------------------------------------------------------------------
+    const identity = x => x;
+    const clamp = (min, max) => x => Math.max(min, Math.min(max, x));
+    const sum = arr => arr.reduce((a, b) => a + b, 0);
+    const mean = arr => (arr.length ? sum(arr) / arr.length : 0);
+    const last = arr => (arr.length ? arr[arr.length - 1] : undefined);
+    const map = f => arr => arr.map(f);
+    const zip = (a, b) => a.map((x, i) => [x, b[i]]);
+    const range = (n, start = 0) => Array.from({length: n}, (_, i) => start + i);
+    const pipe = (...fns) => x => fns.reduce((v, f) => f(v), x);
+    const curry2 = f => a => b => f(a, b);
+
+    // Pure Math Doc (ascii):
+    // - SMA: SMA_t = (1/n) * Σ_{i=0}^{n-1} x_{t-i}
+    // - EMA: EMA_t = α*x_t + (1-α)*EMA_{t-1}, α = 2/(n+1)
+    // - RSI: RSI = 100 - 100/(1 + RS), RS = avg_gain/avg_loss
+    // - MACD: MACD = EMA_fast - EMA_slow; Signal = EMA(MACD, n)
+    // - Max Drawdown: MDD = max_{t}( (peak_t - x_t) / peak_t )
+
+    // -----------------------------------------------------------------------------------------
+    // Indicators (pure)
+    // -----------------------------------------------------------------------------------------
+    const sma = (values, period) => {
+      if (period <= 0) throw new Error("SMA period must be > 0");
+      const out = [];
+      let rolling = 0;
+      for (let i = 0; i < values.length; i++) {
+        rolling += values[i];
+        if (i >= period) rolling -= values[i - period];
+        out.push(i >= period - 1 ? rolling / period : NaN);
+      }
+      return out;
+    };
+
+    const ema = (values, period) => {
+      if (period <= 0) throw new Error("EMA period must be > 0");
+      const alpha = 2 / (period + 1);
+      const out = [];
+      let prev;
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        prev = i === 0 ? v : alpha * v + (1 - alpha) * prev;
+        out.push(prev);
+      }
+      return out;
+    };
+
+    const rsi = (closes, period = 14) => {
+      if (period <= 0) throw new Error("RSI period must be > 0");
+      const out = Array(closes.length).fill(NaN);
+      let gains = 0, losses = 0;
+      for (let i = 1; i <= period; i++) {
+        const ch = closes[i] - closes[i - 1];
+        if (ch >= 0) gains += ch; else losses -= ch;
+      }
+      let avgGain = gains / period;
+      let avgLoss = losses / period;
+      out[period] = 100 - 100 / (1 + (avgGain / (avgLoss || 1e-12)));
+      for (let i = period + 1; i < closes.length; i++) {
+        const ch = closes[i] - closes[i - 1];
+        const gain = Math.max(ch, 0);
+        const loss = Math.max(-ch, 0);
+        avgGain = (avgGain * (period - 1) + gain) / period;
+        avgLoss = (avgLoss * (period - 1) + loss) / period;
+        const rs = avgGain / (avgLoss || 1e-12);
+        out[i] = 100 - 100 / (1 + rs);
+      }
+      return out;
+    };
+
+    const macd = (closes, fast = 12, slow = 26, signalPeriod = 9) => {
+      const emaFast = ema(closes, fast);
+      const emaSlow = ema(closes, slow);
+      const line = emaFast.map((v, i) => v - emaSlow[i]);
+      const signal = ema(line, signalPeriod);
+      const hist = line.map((v, i) => v - signal[i]);
+      return { line, signal, hist };
+    };
+
+    const vwap = ohlcv => {
+      // ohlcv: [{high, low, close, volume}]
+      const out = [];
+      let pvSum = 0, vSum = 0;
+      for (const { high, low, close, volume } of ohlcv) {
+        const tp = (high + low + close) / 3;
+        pvSum += tp * volume;
+        vSum += volume;
+        out.push(vSum ? pvSum / vSum : NaN);
+      }
+      return out;
+    };
+
+    const maxDrawdown = series => {
+      let peak = -Infinity;
+      let mdd = 0;
+      for (const x of series) {
+        peak = Math.max(peak, x);
+        if (peak > 0) mdd = Math.max(mdd, (peak - x) / peak);
+      }
+      return mdd;
+    };
+
+    // -----------------------------------------------------------------------------------------
+    // OAuth: DI-friendly wrapper, pure parsing
+    // -----------------------------------------------------------------------------------------
+    /**
+     * @typedef {Object} OAuthConfig
+     * @property {string} clientId
+     * @property {string} authUrl
+     * @property {string} tokenUrl
+     * @property {string} redirectUri
+     * @property {string[]} scopes
+     * @property {(url: string) => Promise<{code?: string, error?: string}>} popup
+     * @property {(url: string, init?: RequestInit) => Promise<Response>} fetchFn
+     */
+
+    /**
+     * @typedef {Object} TokenSet
+     * @property {string} access_token
+     * @property {number} expires_in
+     * @property {string=} refresh_token
+     * @property {string=} id_token
+     * @property {number} obtained_at
+     */
+
+    // Pure function: parse a JWT into claims or throw
+    const parseJwtClaims = (token) => {
+      if (typeof token !== "string" || token.split(".").length !== 3) throw new Error("Invalid JWT format");
+      const [, payload] = token.split(".");
+      const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+      try {
+        return JSON.parse(decoded);
+      } catch {
+        throw new Error("Invalid JWT payload JSON");
+      }
+    };
+
+    // OAuth lib minimal interface (to wrap or adapt a real lib)
+    class OAuthClient {
+      /**
+       * @param {OAuthConfig} config
+       */
+      constructor(config) {
+        this.cfg = config;
+        this.tokens = /** @type {TokenSet|null} */ (null);
+      }
+
+      isAuthenticated() {
+        if (!this.tokens) return false;
+        const now = Math.floor(Date.now() / 1000);
+        return now < (this.tokens.obtained_at + this.tokens.expires_in - 30);
+      }
+
+      getAccessToken() {
+        if (!this.tokens) throw new Error("Not authenticated");
+        if (!this.isAuthenticated()) throw new Error("Token expired");
+        return this.tokens.access_token;
+      }
+
+      async login() {
+        const state = crypto.getRandomValues(new Uint8Array(8)).join("");
+        const url = new URL(this.cfg.authUrl);
+        url.searchParams.set("client_id", this.cfg.clientId);
+        url.searchParams.set("redirect_uri", this.cfg.redirectUri);
+        url.searchParams.set("response_type", "code");
+        url.searchParams.set("scope", this.cfg.scopes.join(" "));
+        url.searchParams.set("state", state);
+
+        const res = await this.cfg.popup(url.toString());
+        if (res.error) throw new Error("Auth error: " + res.error);
+        if (!res.code) throw new Error("Auth code missing");
+
+        const tokenResp = await this.cfg.fetchFn(this.cfg.tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            grant_type: "authorization_code",
+            code: res.code,
+            redirect_uri: this.cfg.redirectUri,
+            client_id: this.cfg.clientId
+          })
+        });
+        if (!tokenResp.ok) throw new Error("Token exchange failed: " + tokenResp.status);
+        const json = await tokenResp.json();
+        const now = Math.floor(Date.now() / 1000);
+        this.tokens = {
+          access_token: String(json.access_token || ""),
+          expires_in: Number(json.expires_in || 0),
+          refresh_token: json.refresh_token ? String(json.refresh_token) : undefined,
+          id_token: json.id_token ? String(json.id_token) : undefined,
+          obtained_at: now
+        };
+        if (!this.tokens.access_token || !this.tokens.expires_in) {
+          this.tokens = null;
+          throw new Error("Invalid token response");
+        }
+        return this.tokens;
+      }
+
+      async refreshIfNeeded() {
+        if (!this.tokens) throw new Error("No tokens to refresh");
+        if (this.isAuthenticated()) return this.tokens;
+        if (!this.tokens.refresh_token) throw new Error("No refresh token");
+        const resp = await this.cfg.fetchFn(this.cfg.tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            grant_type: "refresh_token",
+            refresh_token: this.tokens.refresh_token,
+            client_id: this.cfg.clientId
+          })
+        });
+        if (!resp.ok) throw new Error("Refresh failed: " + resp.status);
+        const json = await resp.json();
+        const now = Math.floor(Date.now() / 1000);
+        this.tokens = {
+          ...this.tokens,
+          access_token: String(json.access_token || this.tokens.access_token),
+          expires_in: Number(json.expires_in || this.tokens.expires_in),
+          obtained_at: now
+        };
+        return this.tokens;
+      }
+
+      logout() {
+        this.tokens = null;
+      }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Market Data: deterministic mock with DI for fetch
+    // -----------------------------------------------------------------------------------------
+    /**
+     * @typedef {{ t:number, o:number, h:number, l:number, c:number, v:number }} Bar
+     */
+
+    const seededRandom = (seed) => {
+      let s = seed >>> 0;
+      return () => {
+        // xorshift32
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+        return (s >>> 0) / 4294967295;
+      };
+    };
+
+    const generateBars = (seed, count, startPrice, intervalSec, volBase = 1000) => {
+      const rnd = seededRandom(seed);
+      const now = Math.floor(Date.now() / 1000) - count * intervalSec;
+      let price = startPrice;
+      const bars = [];
+      for (let i = 0; i < count; i++) {
+        const t = now + i * intervalSec;
+        const drift = 0.00005;
+        const vol = 0.0025 + (rnd() - 0.5) * 0.0005;
+        const ret = drift + vol * (rnd() * 2 - 1);
+        const o = price;
+        const c = Math.max(0.1, o * (1 + ret));
+        const spread = Math.abs(c - o);
+        const h = Math.max(o, c) + spread * (0.6 + rnd() * 0.4);
+        const l = Math.min(o, c) - spread * (0.6 + rnd() * 0.4);
+        const v = Math.round(volBase * (0.8 + rnd() * 0.6));
+        bars.push({ t, o, h, l, c, v });
+        price = c;
+      }
+      return bars;
+    };
+
+    class MarketDataService {
+      /**
+       * @param {(url:string, init?:RequestInit)=>Promise<Response>} fetchFn
+       */
+      constructor(fetchFn) {
+        this.fetchFn = fetchFn;
+      }
+      /**
+       * @param {string} symbol
+       * @param {string} interval
+       * @returns {Promise<Bar[]>}
+       */
+      async getBars(symbol, interval) {
+        // Demo: return deterministic generated bars (seed by symbol+interval)
+        const seed = Array.from(symbol + interval).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+        const sec = interval === "1m" ? 60 : interval === "5m" ? 300 : interval === "15m" ? 900 : interval === "1h" ? 3600 : 86400;
+        const start = symbol === "BTCUSD" ? 60000 : symbol === "NQ" ? 18000 : symbol === "CL" ? 80 : symbol === "GC" ? 1900 : 5000;
+        const count = 240;
+        return generateBars(seed, count, start, sec);
+      }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Store: minimal pub/sub state container
+    // -----------------------------------------------------------------------------------------
+    const createStore = (initial) => {
+      let state = initial;
+      const subs = new Set();
+      return {
+        get: () => state,
+        set: updater => {
+          const next = typeof updater === "function" ? updater(state) : updater;
+          state = next;
+          for (const s of subs) s(state);
+        },
+        sub: fn => { subs.add(fn); return () => subs.delete(fn); }
+      };
+    };
+
+    const appStore = createStore({
+      symbol: "ES",
+      interval: "5m",
+      bars: /** @type{Bar[]} */([]),
+      indicators: { SMA20: true, EMA50: false, RSI14: false, MACD: true, VWAP: false },
+      positions: [],
+      pnl: 0,
+      pnlSeries: [],
+      logs: [],
+      auth: { status: "signed-out", tokens: null }
+    });
+
+    // -----------------------------------------------------------------------------------------
+    // Logger
+    // -----------------------------------------------------------------------------------------
+    const log = (level, message, meta = {}) => {
+      const entry = { t: new Date().toISOString(), level, message, meta };
+      appStore.set(s => ({ ...s, logs: [...s.logs.slice(-499), entry] }));
+      renderLogs();
+    };
+
+    // -----------------------------------------------------------------------------------------
+    // Chart Rendering
+    // -----------------------------------------------------------------------------------------
+    const $canvas = document.getElementById("chart");
+    const ctx = $canvas.getContext("2d");
+
+    const draw = (state) => {
+      const { bars, indicators } = state;
+      const w = $canvas.width, h = $canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // Grid
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 1;
+      for (let x = 60; x < w; x += 60) {
+        ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+      }
+      for (let y = 50; y < h; y += 50) {
+        ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(w, y + 0.5); ctx.stroke();
+      }
+
+      if (!bars.length) return;
+
+      const closes = bars.map(b => b.c);
+      const highs = bars.map(b => b.h);
+      const lows = bars.map(b => b.l);
+      const times = bars.map(b => b.t);
+
+      const min = Math.min(...lows);
+      const max = Math.max(...highs);
+      const pad = (max - min) * 0.05;
+      const yMin = min - pad;
+      const yMax = max + pad;
+      const yMap = v => h - ((v - yMin) / (yMax - yMin)) * (h - 30) - 10;
+      const xMap = i => (i / (bars.length - 1)) * (w - 20) + 10;
+
+      // Price line
+      ctx.strokeStyle = "#9fb7ff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      bars.forEach((b, i) => {
+        const x = xMap(i), y = yMap(b.c);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Indicators
+      if (indicators.SMA20) drawLine(closes, 20, xMap, yMap, "#22d3ee", sma);
+      if (indicators.EMA50) drawLine(closes, 50, xMap, yMap, "#f59e0b", ema);
+      if (indicators.VWAP) {
+        const v = vwap(bars.map(b => ({ high: b.h, low: b.l, close: b.c, volume: b.v })));
+        drawSeries(v, xMap, yMap, "#a78bfa");
+      }
+      if (indicators.RSI14) drawRSI(closes);
+      if (indicators.MACD) drawMACD(closes);
+
+      // Last price badge
+      const lp = last(closes);
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.strokeStyle = "#3a5cc1";
+      ctx.lineWidth = 1;
+      const bx = w - 110, by = 10, bw = 100, bh = 24;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+      ctx.fillStyle = "#e6ebff";
+      ctx.font = "12px system-ui";
+      ctx.fillText(`Last: ${lp.toFixed(2)}`, bx + 8, by + 16);
+
+      function drawLine(series, period, xMap, yMap, color, fn) {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+        const arr = fn(series, period);
+        ctx.beginPath();
+        arr.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
+          const x = xMap(i), y = yMap(v);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      function drawSeries(series, xMap, yMap, color) {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        series.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
+          const x = xMap(i), y = yMap(v);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      function drawRSI(closes) {
+        const r = rsi(closes, 14);
+        // draw small RSI panel at bottom
+        const panelH = 60, top = h - panelH - 8, bottom = h - 8;
+        ctx.fillStyle = "rgba(255,255,255,0.03)";
+        ctx.fillRect(8, top, w - 16, panelH);
+        const yRSI = v => bottom - ((v - 0) / 100) * (panelH - 10) - 5;
+        const x = i => xMap(i);
+        ctx.strokeStyle = "#334155"; ctx.lineWidth = 1;
+        [30, 50, 70].forEach(level => {
+          ctx.beginPath();
+          ctx.moveTo(8, yRSI(level) + 0.5);
+          ctx.lineTo(w - 8, yRSI(level) + 0.5);
+          ctx.stroke();
+        });
+        drawSeries(r, x, yRSI, "#38bdf8");
+      }
+      function drawMACD(closes) {
+        const { line, signal, hist } = macd(closes);
+        const panelH = 60, top = h - panelH * 2 - 16, bottom = top + panelH;
+        ctx.fillStyle = "rgba(255,255,255,0.03)";
+        ctx.fillRect(8, top, w - 16, panelH);
+        const maxAbs = Math.max(1e-6, ...hist.map(Math.abs));
+        const yM = v => bottom - ((v + maxAbs) / (2 * maxAbs)) * (panelH - 10) - 5;
+        const xM = i => xMap(i);
+        // histogram
+        for (let i = 0; i < hist.length; i++) {
+          const v = hist[i];
+          const x = xM(i);
+          ctx.strokeStyle = v >= 0 ? "#22c55e" : "#ef4444";
+          ctx.beginPath();
+          ctx.moveTo(x, yM(0));
+          ctx.lineTo(x, yM(v));
+          ctx.stroke();
+        }
+        // lines
+        drawSeries(line, xM, yM, "#eab308");
+        drawSeries(signal, xM, yM, "#60a5fa");
+      }
+    };
+
+    // -----------------------------------------------------------------------------------------
+    // UI: Rendering functions
+    // -----------------------------------------------------------------------------------------
+    const fmtUSD = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toFixed(2);
+    const fmtPct = x => (x * 100).toFixed(1) + "%";
+
+    const renderStats = (state) => {
+      const pnlEl = document.getElementById("stat-pnl");
+      const pnlTr = document.getElementById("stat-pnl-trend");
+      const winEl = document.getElementById("stat-win");
+      const ddEl = document.getElementById("stat-dd");
+      const expEl = document.getElementById("stat-exp");
+
+      const pnl = state.pnl;
+      const pnlSeries = state.pnlSeries;
+      pnlEl.textContent = fmtUSD(pnl);
+      pnlTr.textContent = (pnlSeries.length > 1 && pnlSeries[pnlSeries.length - 1] >= pnlSeries[pnlSeries.length - 2]) ? "up" : "down";
+      pnlTr.className = "small trend " + (pnlTr.textContent === "up" ? "up" : "down");
+      const wins = Math.round(50 + 40 * Math.random());
+      winEl.textContent = wins + "%";
+
+      const dd = maxDrawdown(pnlSeries.length ? pnlSeries : [1, 0.9, 1.1, 0.95, 1.2].map((x,i)=>x*1000 + i));
+      ddEl.textContent = fmtPct(dd);
+
+      const exposure = clamp(0, 1)(Math.random());
+      expEl.textContent = fmtPct(exposure);
+    };
+
+    const renderWatchlist = (state) => {
+      const wl = document.getElementById("watchlist");
+      wl.innerHTML = "";
+      const instruments = ["ES", "NQ", "CL", "GC", "BTCUSD"].map(sym => {
+        const price = 1000 + Math.random() * 10000;
+        const chg = (Math.random() - 0.5) * 2;
+        return { sym, price, chg };
+      });
+      for (const it of instruments) {
+        const li = document.createElement("div");
+        li.className = "list-item";
+        const priceCls = it.chg >= 0 ? "price up" : "price down";
+        li.innerHTML = `
+          <div><strong>${it.sym}</strong> <span class="small">${(it.chg>=0?"+":"")}${it.chg.toFixed(2)}%</span></div>
+          <div class="${priceCls}">${it.price.toFixed(2)}</div>
+          <button class="btn">Open</button>
+        `;
+        li.querySelector("button").addEventListener("click", () => {
+          document.getElementById("symbol").value = it.sym;
+          appStore.set(s => ({ ...s, symbol: it.sym }));
+          refreshData();
+        });
+        wl.appendChild(li);
+      }
+    };
+
+    const renderPositions = (state) => {
+      const el = document.getElementById("positions");
+      el.innerHTML = "";
+      const rows = state.positions;
+      if (!rows.length) {
+        const d = document.createElement("div");
+        d.className = "small";
+        d.textContent = "No open positions.";
+        el.appendChild(d);
+        return;
+      }
+      for (const p of rows) {
+        const li = document.createElement("div");
+        li.className = "list-item";
+        const side = p.qty >= 0 ? "Long" : "Short";
+        li.innerHTML = `
+          <div><strong>${p.symbol}</strong> <span class="tag">${side}</span></div>
+          <div>${fmtUSD(p.unrealizedPnl)}</div>
+          <button class="btn ghost">Close</button>
+        `;
+        li.querySelector("button").addEventListener("click", () => {
+          const realized = p.unrealizedPnl;
+          appStore.set(s => {
+            const nextPos = s.positions.filter(x => x !== p);
+            const nextPnl = s.pnl + realized;
+            const nextSeries = [...s.pnlSeries, nextPnl];
+            return { ...s, positions: nextPos, pnl: nextPnl, pnlSeries: nextSeries };
+          });
+          renderStats(appStore.get());
+          renderPositions(appStore.get());
+          log("info", "Closed position", p);
+        });
+        el.appendChild(li);
+      }
+    };
+
+    const renderIndicatorToggles = (state) => {
+      const host = document.getElementById("indicator-toggles");
+      host.innerHTML = "";
+      Object.entries(state.indicators).forEach(([name, on]) => {
+        const div = document.createElement("div");
+        div.className = "list-item";
+        div.innerHTML = `
+          <div><strong>${name}</strong></div>
+          <div class="small">${on ? "on" : "off"}</div>
+          <button class="btn">${on ? "Disable" : "Enable"}</button>
+        `;
+        div.querySelector("button").addEventListener("click", () => {
+          appStore.set(s => ({ ...s, indicators: { ...s.indicators, [name]: !s.indicators[name] }}));
+          draw(appStore.get());
+          renderIndicatorToggles(appStore.get());
+        });
+        host.appendChild(div);
+      });
+    };
+
+    const renderLogs = () => {
+      const { logs } = appStore.get();
+      const pre = document.getElementById("logs");
+      pre.textContent = logs.map(l => `[${l.t}] ${l.level.toUpperCase()} — ${l.message}${Object.keys(l.meta||{}).length ? " " + JSON.stringify(l.meta) : ""}`).join("\n");
+    };
+
+    const renderAuth = (state) => {
+      const badge = document.getElementById("auth-status");
+      badge.textContent = state.auth.status;
+      badge.className = "tag " + (state.auth.status === "signed-in" ? "success" : "warn");
+    };
+
+    const renderCoTSteps = () => {
+      const el = document.getElementById("cot-steps");
+      el.innerHTML = "";
+      const steps = [
+        { title: "Define market & timeframe", text: "Symbol and interval set by user controls." },
+        { title: "Gather price & volume data", text: "Fetch/generate time-series OHLCV." },
+        { title: "Compute indicators", text: "SMA, EMA, RSI, MACD, VWAP applied." },
+        { title: "Assess positioning (CoT-like)", text: "Proxy via volume/price regime for demo." },
+        { title: "Risk adjustments", text: "Update exposure and max drawdown." },
+        { title: "Execute or wait", text: "Buttons place paper trades; log rationales." }
+      ];
+      for (const s of steps) {
+        const li = document.createElement("div");
+        li.className = "list-item";
+        li.innerHTML = `<div><strong>${s.title}</strong><div class="small">${s.text}</div></div><div></div><span class="tag">ok</span>`;
+        el.appendChild(li);
+      }
+    };
+
+    // -----------------------------------------------------------------------------------------
+    // Demo OAuth "popup" and token endpoint (mock)
+    // -----------------------------------------------------------------------------------------
+    const demoPopup = async (url) => {
+      log("info", "Opening auth popup", { url });
+      await new Promise(r => setTimeout(r, 400));
+      return { code: "demo-code-" + Math.random().toString(36).slice(2) };
+    };
+    const demoFetch = async (url, init) => {
+      if (url.includes("/token")) {
+        await new Promise(r => setTimeout(r, 250));
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (body.grant_type === "authorization_code") {
+          return new Response(JSON.stringify({
+            access_token: "header." + btoa(JSON.stringify({ sub:"123", name:"Ada", iat: Math.floor(Date.now()/1000) })).replace(/\+/g,"-").replace(/\//g,"_") + ".sig",
+            id_token: "header." + btoa(JSON.stringify({ email:"ada@example.com" })).replace(/\+/g,"-").replace(/\//g,"_") + ".sig",
+            expires_in: 120,
+            refresh_token: "refresh-demo"
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (body.grant_type === "refresh_token") {
+          return new Response(JSON.stringify({
+            access_token: "header." + btoa(JSON.stringify({ sub:"123", name:"Ada", iat: Math.floor(Date.now()/1000) })).replace(/\+/g,"-").replace(/\//g,"_") + ".sig",
+            expires_in: 120
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response("bad request", { status: 400 });
+      }
+      return fetch(url, init);
+    };
+
+    // -----------------------------------------------------------------------------------------
+    // Demo: DI injects config into OAuth and MarketData
+    // -----------------------------------------------------------------------------------------
+    const oauth = new OAuthClient({
+      clientId: "demo-client",
+      authUrl: "https://auth.example.com/authorize",
+      tokenUrl: "https://auth.example.com/token",
+      redirectUri: window.location.origin + "/callback",
+      scopes: ["profile", "email", "trading:read"],
+      popup: demoPopup,
+      fetchFn: demoFetch
+    });
+    const dataSvc = new MarketDataService(demoFetch);
+
+    // -----------------------------------------------------------------------------------------
+    // Actions
+    // -----------------------------------------------------------------------------------------
+    async function refreshData() {
+      const { symbol, interval } = appStore.get();
+      document.getElementById("chart-title").textContent = `${symbol} • ${interval}`;
+      try {
+        const bars = await dataSvc.getBars(symbol, interval);
+        appStore.set(s => ({ ...s, bars }));
+        draw(appStore.get());
+        renderStats(appStore.get());
+        log("info", "Data refreshed", { symbol, interval, count: bars.length });
+      } catch (e) {
+        log("error", "Failed to refresh data: " + e.message);
+      }
+    }
+
+    function addPosition(side, qty) {
+      const { symbol, bars } = appStore.get();
+      if (!bars.length) return;
+      const lastPx = last(bars).c;
+      const pos = {
+        symbol,
+        qty: side === "buy" ? Math.abs(qty) : -Math.abs(qty),
+        entry: lastPx,
+        unrealizedPnl: 0
+      };
+      appStore.set(s => ({ ...s, positions: [...s.positions, pos] }));
+      renderPositions(appStore.get());
+      log("info", "Opened position", pos);
+    }
+
+    function markPositions() {
+      const { positions, bars } = appStore.get();
+      if (!positions.length || !bars.length) return;
+      const px = last(bars).c;
+      const next = positions.map(p => ({
+        ...p,
+        unrealizedPnl: (px - p.entry) * p.qty
+      }));
+      appStore.set(s => ({ ...s, positions: next }));
+      renderPositions(appStore.get());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Events
+    // -----------------------------------------------------------------------------------------
+    document.getElementById("symbol").addEventListener("change", e => {
+      appStore.set(s => ({ ...s, symbol: e.target.value }));
+      refreshData();
+    });
+    document.getElementById("interval").addEventListener("change", e => {
+      appStore.set(s => ({ ...s, interval: e.target.value }));
+      refreshData();
+    });
+    document.getElementById("btn-refresh").addEventListener("click", refreshData);
+    document.getElementById("btn-clear-logs").addEventListener("click", () => {
+      appStore.set(s => ({ ...s, logs: [] })); renderLogs();
+    });
+    document.getElementById("buy-mkt").addEventListener("click", () => {
+      const qty = Number(document.getElementById("order-size").value || 1);
+      addPosition("buy", qty);
+      document.getElementById("exec-status").textContent = "Buy market executed (paper).";
+    });
+    document.getElementById("sell-mkt").addEventListener("click", () => {
+      const qty = Number(document.getElementById("order-size").value || 1);
+      addPosition("sell", qty);
+      document.getElementById("exec-status").textContent = "Sell market executed (paper).";
+    });
+    document.getElementById("export-png").addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = $canvas.toDataURL("image/png");
+      a.download = "chart.png";
+      a.click();
+    });
+    document.getElementById("btn-login").addEventListener("click", async () => {
+      try {
+        const tokens = await oauth.login();
+        const claims = tokens.id_token ? parseJwtClaims(tokens.id_token) : {};
+        appStore.set(s => ({ ...s, auth: { status: "signed-in", tokens } }));
+        renderAuth(appStore.get());
+        log("info", "Signed in", { claims });
+      } catch (e) {
+        log("error", "Login failed: " + e.message);
+      }
+    });
+    document.getElementById("btn-logout").addEventListener("click", () => {
+      oauth.logout();
+      appStore.set(s => ({ ...s, auth: { status: "signed-out", tokens: null } }));
+      renderAuth(appStore.get());
+      log("info", "Signed out");
+    });
+
+    // -----------------------------------------------------------------------------------------
+    // Demo usage: Reusable authenticated call
+    // -----------------------------------------------------------------------------------------
+    async function demoAuthenticatedFetch() {
+      try {
+        await oauth.refreshIfNeeded().catch(() => null);
+        const token = oauth.getAccessToken();
+        // Example reusable call: portfolio endpoint
+        const resp = await demoFetch("https://api.example.com/portfolio", {
+          headers: { Authorization: "Bearer " + token }
+        });
+        // In demo route not implemented; just prove structure
+        log("info", "Demo authenticated request succeeded (structure only)");
+      } catch (e) {
+        log("error", "Demo authenticated request failed: " + e.message);
+      }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Tests (edge cases): simple runner
+    // -----------------------------------------------------------------------------------------
+    const tests = [];
+    const test = (name, fn) => tests.push({ name, fn });
+    const assertEq = (a, b, msg = "equal") => {
+      const eq = Number.isNaN(a) && Number.isNaN(b) ? true : JSON.stringify(a) === JSON.stringify(b);
+      if (!eq) throw new Error(`Expected ${msg}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+    };
+    const assert = (cond, msg = "assertion failed") => { if (!cond) throw new Error(msg); };
+
+    // OAuth token parse tests
+    test("parseJwtClaims rejects non-string", () => {
+      let err = "";
+      try { parseJwtClaims(null); } catch (e) { err = e.message; }
+      assert(err.includes("Invalid JWT format"));
+    });
+    test("parseJwtClaims rejects malformed token", () => {
+      let err = "";
+      try { parseJwtClaims("a.b"); } catch (e) { err = e.message; }
+      assert(err.includes("Invalid JWT format"));
+    });
+    test("parseJwtClaims decodes payload", () => {
+      const payload = btoa(JSON.stringify({ email: "x@y.z", admin: true })).replace(/\+/g,"-").replace(/\//g,"_");
+      const tok = `h.${payload}.s`;
+      const claims = parseJwtClaims(tok);
+      assertEq(claims.email, "x@y.z");
+      assertEq(claims.admin, true);
+    });
+
+    // Indicator tests
+    test("SMA basic", () => {
+      const v = [1,2,3,4,5];
+      assertEq(sma(v, 2).map(x => Math.round(x*100)/100), [NaN,1.5,2.5,3.5,4.5]);
+    });
+    test("EMA monotonic smoothing", () => {
+      const v = [1,2,3,4,5];
+      const e = ema(v, 3);
+      assert(e[e.length-1] < 5 && e[0] === 1);
+    });
+    test("RSI bounds", () => {
+      const v = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+      const r = rsi(v, 14);
+      assert(r.every(x => Number.isNaN(x) || (x >= 0 && x <= 100)));
+    });
+    test("MACD shape", () => {
+      const v = range(50).map(i => i + (i%3 ? 0 : 0.1));
+      const m = macd(v);
+      assertEq(m.line.length, v.length);
+      assertEq(m.signal.length, v.length);
+      assertEq(m.hist.length, v.length);
+    });
+    test("MaxDrawdown basic", () => {
+      const s = [100,120,90,150,140];
+      const m = maxDrawdown(s);
+      assert(Math.abs(m - (30/120)) < 1e-9);
+    });
+
+    async function runTests() {
+      const out = [];
+      for (const t of tests) {
+        const t0 = performance.now();
+        try {
+          await t.fn();
+          out.push({ name: t.name, ok: true, ms: performance.now() - t0 });
+        } catch (e) {
+          out.push({ name: t.name, ok: false, err: e.message, ms: performance.now() - t0 });
+        }
+      }
+      const passed = out.filter(x => x.ok).length;
+      const resEl = document.getElementById("test-result");
+      resEl.textContent = `${passed}/${out.length} tests passed`;
+      resEl.className = "small " + (passed === out.length ? "success" : "error");
+      for (const r of out) {
+        log(r.ok ? "info" : "error", `[test] ${r.name} — ${r.ok ? "ok" : r.err} (${r.ms.toFixed(1)}ms)`);
+      }
+    }
+    document.getElementById("btn-run-tests").addEventListener("click", runTests);
+
+    // -----------------------------------------------------------------------------------------
+    // Bootstrap
+    // -----------------------------------------------------------------------------------------
+    renderIndicatorToggles(appStore.get());
+    renderCoTSteps();
+    renderWatchlist(appStore.get());
+    renderAuth(appStore.get());
+    renderPositions(appStore.get());
+    refreshData();
+    setInterval(() => { markPositions(); renderStats(appStore.get()); }, 1500);
+
+    // Optional: after login, show demo authenticated call reuse
+    appStore.sub(s => {
+      if (s.auth.status === "signed-in") {
+        demoAuthenticatedFetch();
+      }
+    });
+  </script>
+</body>
+</html>

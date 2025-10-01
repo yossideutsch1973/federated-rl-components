@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mountain Car - Federated RL</title>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app { max-width: 1400px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // ⭐ CREATE A COMPLETE FEDERATED RL APP IN ~30 LINES! ⭐
+
+        const app = createFederatedApp({
+            name: 'Mountain Car',
+            subtitle: '16 clients learning to reach the goal',
+            numClients: 16,
+            canvasWidth: 280,
+            canvasHeight: 180,
+            
+            // RL parameters
+            alpha: 0.15,
+            gamma: 0.99,
+            epsilon: 0.3,
+            
+            // Auto-federate every 100 episodes
+            autoFederate: true,
+            federationInterval: 100,
+            
+            // Define environment
+            environment: {
+                actions: ['LEFT', 'NONE', 'RIGHT'], // 3 actions
+                
+                // State representation
+                getState: (state) => {
+                    const posB = Math.floor((state.pos + 1.2) / 1.7 * 10);
+                    const velB = Math.floor((state.vel + 0.07) / 0.14 * 10);
+                    return `${posB},${velB}`;
+                },
+                
+                // Physics
+                step: (state, action) => {
+                    const force = (action - 1) * 0.001; // -0.001, 0, 0.001
+                    let vel = state.vel + force - 0.0025 * Math.cos(3 * state.pos);
+                    vel = Math.max(-0.07, Math.min(0.07, vel));
+                    
+                    let pos = state.pos + vel;
+                    pos = Math.max(-1.2, Math.min(0.5, pos));
+                    
+                    if (pos === -1.2 && vel < 0) vel = 0;
+                    
+                    const reward = pos >= 0.5 ? 0 : -1;
+                    const done = pos >= 0.5 || state.steps > 200;
+                    
+                    return {
+                        state: { pos, vel, steps: state.steps + 1 },
+                        reward,
+                        done
+                    };
+                },
+                
+                // Reset
+                reset: () => ({
+                    pos: -0.5 + (Math.random() - 0.5) * 0.4,
+                    vel: 0,
+                    steps: 0
+                })
+            },
+            
+            // Rendering
+            render: (ctx, state) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                
+                // Clear
+                ctx.fillStyle = '#111';
+                ctx.fillRect(0, 0, w, h);
+                
+                // Mountain
+                ctx.strokeStyle = '#444';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                for (let x = 0; x < w; x++) {
+                    const pos = (x / w) * 1.7 - 1.2;
+                    const y = h - (Math.sin(3 * pos) * 0.45 + 0.55) * h * 0.5;
+                    ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+                
+                // Goal flag
+                const goalX = ((0.5 + 1.2) / 1.7) * w;
+                const goalY = h - (Math.sin(3 * 0.5) * 0.45 + 0.55) * h * 0.5;
+                ctx.fillStyle = '#22c55e';
+                ctx.fillRect(goalX - 3, goalY - 20, 6, 20);
+                
+                // Car
+                const carX = ((state.pos + 1.2) / 1.7) * w;
+                const carY = h - (Math.sin(3 * state.pos) * 0.45 + 0.55) * h * 0.5;
+                ctx.fillStyle = state.pos >= 0.5 ? '#22c55e' : '#4f8cff';
+                ctx.fillRect(carX - 6, carY - 6, 12, 12);
+                
+                // Velocity arrow
+                ctx.strokeStyle = '#ff5577';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(carX, carY);
+                ctx.lineTo(carX + state.vel * 200, carY);
+                ctx.stroke();
+            }
+        });
+
+        // Auto-start after 1 second
+        setTimeout(() => app.start(), 1000);
+    </script>
+</body>
+</html>

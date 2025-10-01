@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Grid World - Ultra Minimal</title>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: system-ui;
+        }
+        #app { max-width: 1400px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { createFederatedApp } from '../components/app-template.js';
+
+        // ⭐ 10x10 GRID WORLD IN JUST ~20 LINES! ⭐
+
+        createFederatedApp({
+            name: 'Grid World',
+            subtitle: '4 clients finding the goal',
+            numClients: 4,
+            autoFederate: true,
+            
+            environment: {
+                actions: ['UP', 'DOWN', 'LEFT', 'RIGHT'],
+                
+                getState: (s) => `${s.x},${s.y}`,
+                
+                step: (s, a) => {
+                    const moves = [[0,-1], [0,1], [-1,0], [1,0]];
+                    const [dx, dy] = moves[a];
+                    let x = Math.max(0, Math.min(9, s.x + dx));
+                    let y = Math.max(0, Math.min(9, s.y + dy));
+                    
+                    const atGoal = x === 9 && y === 9;
+                    return { 
+                        state: { x, y, steps: s.steps + 1 }, 
+                        reward: atGoal ? 100 : -1, 
+                        done: atGoal || s.steps > 100
+                    };
+                },
+                
+                reset: () => ({ x: 0, y: 0, steps: 0 })
+            },
+            
+            render: (ctx, s) => {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                const cellW = w / 10;
+                const cellH = h / 10;
+                
+                // Grid
+                ctx.fillStyle = '#111';
+                ctx.fillRect(0, 0, w, h);
+                ctx.strokeStyle = '#333';
+                for (let i = 0; i <= 10; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(i * cellW, 0);
+                    ctx.lineTo(i * cellW, h);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(0, i * cellH);
+                    ctx.lineTo(w, i * cellH);
+                    ctx.stroke();
+                }
+                
+                // Goal
+                ctx.fillStyle = '#22c55e';
+                ctx.fillRect(9 * cellW, 9 * cellH, cellW, cellH);
+                
+                // Agent
+                ctx.fillStyle = s.x === 9 && s.y === 9 ? '#22c55e' : '#4f8cff';
+                ctx.beginPath();
+                ctx.arc(s.x * cellW + cellW/2, s.y * cellH + cellH/2, cellW/3, 0, 2*Math.PI);
+                ctx.fill();
+            }
+        }).start();
+    </script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Federated RL Demos</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 20px;
+            font-size: 3em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .subtitle {
+            text-align: center;
+            color: rgba(255,255,255,0.9);
+            margin-bottom: 50px;
+            font-size: 1.3em;
+        }
+        .demos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 30px;
+            margin-bottom: 50px;
+        }
+        .demo-card {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .demo-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 25px 70px rgba(0,0,0,0.4);
+        }
+        .demo-icon {
+            font-size: 4em;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .demo-title {
+            font-size: 2em;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 15px;
+            color: #2d3748;
+        }
+        .demo-description {
+            color: #4a5568;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            font-size: 1.05em;
+        }
+        .demo-features {
+            margin-bottom: 25px;
+        }
+        .feature {
+            padding: 8px 0;
+            color: #2d3748;
+            font-size: 0.95em;
+        }
+        .feature::before {
+            content: "✓ ";
+            color: #48bb78;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        .demo-button {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1.1em;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+        }
+        .demo-button:hover {
+            transform: scale(1.02);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .demo-button.secondary {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+        .info-section {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin-bottom: 30px;
+        }
+        .info-title {
+            font-size: 2em;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 20px;
+        }
+        .info-content {
+            color: #4a5568;
+            line-height: 1.8;
+            font-size: 1.05em;
+        }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .comparison-table th,
+        .comparison-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .comparison-table th {
+            background: #f7fafc;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        .comparison-table tr:hover {
+            background: #f7fafc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Federated Reinforcement Learning Demos</h1>
+        <div class="subtitle">Interactive demonstrations of multi-agent learning with privacy-preserving knowledge sharing</div>
+
+        <div class="demos-grid">
+            <div class="demo-card">
+                <div class="demo-icon">⚖️</div>
+                <div class="demo-title">Ball Balancing</div>
+                <div class="demo-description">
+                    AI agents learn to keep a falling ball balanced on a moving platform. Each client has different physics (gravity, platform speed, ball properties).
+                </div>
+                <div class="demo-features">
+                    <div class="feature">Projectile motion physics</div>
+                    <div class="feature">3 actions: LEFT, STAY, RIGHT</div>
+                    <div class="feature">Heterogeneous gravity & friction</div>
+                    <div class="feature">Visual trajectory tracking</div>
+                    <div class="feature">100-200 episodes to converge</div>
+                </div>
+                <a href="ball-balancing/index.html" class="demo-button">Launch Ball Balancing Demo</a>
+            </div>
+
+            <div class="demo-card">
+                <div class="demo-icon">🎯</div>
+                <div class="demo-title">Cart-Pole Balance</div>
+                <div class="demo-description">
+                    Classic inverted pendulum problem where agents learn to balance a pole on a moving cart. Each client has different pole lengths, cart masses, and friction coefficients.
+                </div>
+                <div class="demo-features">
+                    <div class="feature">Inverted pendulum dynamics</div>
+                    <div class="feature">2 actions: PUSH LEFT or RIGHT</div>
+                    <div class="feature">Heterogeneous pole length & mass</div>
+                    <div class="feature">Clear success/failure states</div>
+                    <div class="feature">50-100 episodes to converge</div>
+                </div>
+                <a href="cart-pole/index.html" class="demo-button secondary">Launch Cart-Pole Demo</a>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-title">📖 What is Federated Reinforcement Learning?</div>
+            <div class="info-content">
+                <p><strong>Federated Learning</strong> is a machine learning approach where multiple clients collaboratively train a model while keeping their data decentralized. Instead of sending raw data to a central server, clients train locally and only share model parameters.</p>
+                
+                <p style="margin-top: 15px;"><strong>Reinforcement Learning</strong> is a type of machine learning where an agent learns to make decisions by interacting with an environment, receiving rewards or penalties based on its actions.</p>
+                
+                <p style="margin-top: 15px;"><strong>Federated RL</strong> combines both: multiple RL agents learn independently on their local environments (with potentially different dynamics), then periodically share their learned Q-tables to create a global model that benefits from diverse experiences.</p>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-title">🎯 Key Benefits</div>
+            <div class="info-content">
+                <div class="feature">🚀 <strong>Faster Convergence:</strong> 16 clients learn 5x faster than single agent</div>
+                <div class="feature">🔒 <strong>Privacy Preservation:</strong> Raw data stays on client devices</div>
+                <div class="feature">🌍 <strong>Robustness:</strong> Global model works across diverse conditions</div>
+                <div class="feature">💡 <strong>Knowledge Sharing:</strong> Agents benefit from collective experience</div>
+                <div class="feature">📊 <strong>Scalability:</strong> Supports 1-100 clients dynamically</div>
+                <div class="feature">⚡ <strong>Real-time Learning:</strong> See convergence in minutes, not hours</div>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-title">📊 Comparison</div>
+            <div class="info-content">
+                <table class="comparison-table">
+                    <thead>
+                        <tr>
+                            <th>Aspect</th>
+                            <th>Ball Balancing</th>
+                            <th>Cart-Pole</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Difficulty</strong></td>
+                            <td>Low-Medium</td>
+                            <td>Medium</td>
+                        </tr>
+                        <tr>
+                            <td><strong>State Space</strong></td>
+                            <td>3,000-8,000 states</td>
+                            <td>5,000-10,000 states</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Actions</strong></td>
+                            <td>3 (LEFT/STAY/RIGHT)</td>
+                            <td>2 (LEFT/RIGHT)</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Physics Type</strong></td>
+                            <td>Projectile motion</td>
+                            <td>Inverted pendulum</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Heterogeneity</strong></td>
+                            <td>Gravity, platform speed</td>
+                            <td>Pole length, cart mass</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Convergence (16 clients)</strong></td>
+                            <td>~100-200 episodes</td>
+                            <td>~50-100 episodes</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Visual Appeal</strong></td>
+                            <td>Smooth trajectories</td>
+                            <td>Dramatic failures</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Real-World Use</strong></td>
+                            <td>Manufacturing, robotics</td>
+                            <td>Control systems, walking</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-title">🚀 Getting Started</div>
+            <div class="info-content">
+                <ol style="padding-left: 25px;">
+                    <li style="margin-bottom: 15px;"><strong>Choose a demo</strong> - Pick either Ball Balancing or Cart-Pole from above</li>
+                    <li style="margin-bottom: 15px;"><strong>Set client count</strong> - Start with 16 clients (try 50 or 100 for faster convergence!)</li>
+                    <li style="margin-bottom: 15px;"><strong>Start training</strong> - Click "▶ Start Training" and watch agents learn</li>
+                    <li style="margin-bottom: 15px;"><strong>Enable auto-federation</strong> - Click "🤖 Auto-Federate" for hands-free learning</li>
+                    <li style="margin-bottom: 15px;"><strong>Observe convergence</strong> - Notice how "States Learned" jumps when federating</li>
+                    <li style="margin-bottom: 15px;"><strong>Export model</strong> - Save your trained model for production use</li>
+                </ol>
+                
+                <p style="margin-top: 20px; padding: 15px; background: #f7fafc; border-left: 4px solid #667eea; border-radius: 4px;">
+                    <strong>💡 Tip:</strong> Watch the Chain-of-Thought (CoT) panel to see when auto-federation triggers and how knowledge is shared across clients!
+                </p>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-title">🔬 Technical Details</div>
+            <div class="info-content">
+                <h3 style="color: #2d3748; margin-bottom: 10px;">Algorithm: Q-Learning</h3>
+                <p>Q(s,a) ← Q(s,a) + α[r + γ·max<sub>a'</sub>(Q(s',a')) - Q(s,a)]</p>
+                <ul style="margin: 15px 0 15px 25px;">
+                    <li><strong>α (learning rate):</strong> 0.1 - how much to update Q-values</li>
+                    <li><strong>γ (discount factor):</strong> 0.95-0.99 - future reward importance</li>
+                    <li><strong>ε (epsilon):</strong> 0.2-0.3 - exploration vs exploitation</li>
+                </ul>
+
+                <h3 style="color: #2d3748; margin: 20px 0 10px;">Federated Averaging</h3>
+                <p>θ<sub>global</sub> = Σ(n<sub>k</sub> / n) · θ<sub>k</sub></p>
+                <p style="margin-top: 10px;">Each client's Q-table is averaged with equal weight. All unique states from all clients are included in the global model.</p>
+
+                <h3 style="color: #2d3748; margin: 20px 0 10px;">Auto-Federation Strategy</h3>
+                <p>Triggers every ~50-100 episodes (average across clients) or every 5 seconds, whichever comes first. This balances local exploration with global knowledge sharing.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
