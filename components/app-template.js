@@ -517,7 +517,7 @@ export const createFederatedApp = (config) => {
                 environment,
                 getState: environment.getState,
                 numEpisodes,
-                metricsConfig: metrics,
+                ...(metrics && { metricsConfig: metrics }),
                 renderFn: render,
                 ctx: clients[0].ctx,
                 onEpisodeComplete: (episodeResult, current, total) => {
