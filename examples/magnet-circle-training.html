@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>🧲 Circular Motion Training (Curriculum Step 1)</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff; 
+            font-family: monospace; 
+        }
+        #app { max-width: 1800px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module">
+        /**
+         * CURRICULUM LEARNING: STEP 1 - CIRCULAR MOTION
+         * 
+         * Simplified task: Keep object on circular path
+         * Goal: Learn magnet control before complex slalom navigation
+         * 
+         * Reward: r = -|distance_from_circle| - 0.1·t - 0.01·n_active·(s+1)
+         * Target circle: radius=100px, center=(200,200)
+         * 
+         * State: 6D (x, y, vx, vy, error, angular_position)
+         * Actions: 27 (9 patterns × 3 strengths)
+         * 
+         * Adaptive α: Starts 0.5, decays to 0.05 based on visits
+         */
+
+        // ====================================================================
+        // IMPORTS
+        // ====================================================================
+        import { createFederatedApp } from '../components/app-template.js';
+        import { createLiveControls } from '../components/live-controls.js';
+        import { DEFAULT_CONFIGS } from '../components/metrics-core.js';
+
+        // ====================================================================
+        // CONFIGURATION (LIVE ADJUSTABLE)
+        // ====================================================================
+        
+        const CONFIG = {
+            // Physics
+            strengthMed: 50000,
+            strengthHigh: 100000,
+            friction: 0.88,
+            maxVelocity: 15,
+            
+            // Training
+            maxSteps: 2000,
+            alpha: 0.3,
+            gamma: 0.95,
+            epsilon: 0.4,
+            epsilonDecay: 0.995,
+            minEpsilon: 0.01,
+            
+            // Circle-specific
+            targetRadius: 100,
+            errorThreshold: 15,
+            
+            // Performance
+            renderInterval: 50
+        };
+        
+        const PHYSICS_CONFIG = {
+            get strengthLevels() { return [0, CONFIG.strengthMed, CONFIG.strengthHigh]; },
+            minDistance: 30,
+            get friction() { return CONFIG.friction; },
+            get maxVelocity() { return CONFIG.maxVelocity; },
+            dt: 1.0
+        };
+
+        const TARGET_RADIUS = CONFIG.targetRadius;
+        const CENTER = { x: 200, y: 200 };
+        const ERROR_THRESHOLD = CONFIG.errorThreshold;
+
+        const MAGNETS = [
+            {x: 200, y: 20},    // N
+            {x: 340, y: 60},    // NE
+            {x: 380, y: 200},   // E
+            {x: 340, y: 340},   // SE
+            {x: 200, y: 380},   // S
+            {x: 60, y: 340},    // SW
+            {x: 20, y: 200},    // W
+            {x: 60, y: 60}      // NW
+        ];
+
+        // ====================================================================
+        // PURE FUNCTIONS
+        // ====================================================================
+
+        /**
+         * Calculate distance error from target circle
+         * error = |r_actual - r_target|
+         */
+        const calculateCircleError = (x, y) => {
+            const dx = x - CENTER.x;
+            const dy = y - CENTER.y;
+            const actualRadius = Math.hypot(dx, dy);
+            return Math.abs(actualRadius - TARGET_RADIUS);
+        };
+
+        /**
+         * Calculate angular position on circle
+         * θ = atan2(y - cy, x - cx)
+         */
+        const calculateAngle = (x, y) => {
+            return Math.atan2(y - CENTER.y, x - CENTER.x);
+        };
+
+        /**
+         * Apply magnetic forces (same as slalom)
+         */
+        const applyMagneticForces = (state, action, config = PHYSICS_CONFIG) => {
+            let fx = 0, fy = 0;
+            
+            const magnetStrength = config.strengthLevels[action.strength];
+            
+            action.pattern.forEach((magnetOn, i) => {
+                if (!magnetOn) return;
+                
+                const mag = MAGNETS[i];
+                const dx = mag.x - state.x;
+                const dy = mag.y - state.y;
+                const r = Math.max(Math.hypot(dx, dy), config.minDistance);
+                
+                const forceMag = magnetStrength / (r * r);
+                fx += forceMag * dx / r;
+                fy += forceMag * dy / r;
+            });
+            
+            let vx = state.vx * config.friction + fx * config.dt;
+            let vy = state.vy * config.friction + fy * config.dt;
+            
+            const vMag = Math.hypot(vx, vy);
+            if (vMag > config.maxVelocity) {
+                const scale = config.maxVelocity / vMag;
+                vx *= scale;
+                vy *= scale;
+            }
+            
+            let x = state.x + vx * config.dt;
+            let y = state.y + vy * config.dt;
+            
+            if (x < 10) { x = 10; vx = 0; }
+            if (x > 390) { x = 390; vx = 0; }
+            if (y < 10) { y = 10; vy = 0; }
+            if (y > 390) { y = 390; vy = 0; }
+            
+            return { x, y, vx, vy, fx, fy };
+        };
+
+        /**
+         * Discretize state (simpler than slalom)
+         * State: (error_bin, angle_bin, velocity_mag)
+         */
+        const discretize = (value, bins, min, max) => {
+            const normalized = (value - min) / (max - min);
+            const bin = Math.floor(normalized * bins);
+            return Math.max(0, Math.min(bins - 1, bin));
+        };
+
+        const stateToKey = (state) => {
+            const errorBin = discretize(state.error, 5, 0, 100);  // 0-100px error
+            const angleBin = discretize(state.angle, 8, -Math.PI, Math.PI);  // 8 octants
+            const vMag = Math.hypot(state.vx, state.vy);
+            const velBin = discretize(vMag, 3, 0, 15);
+            
+            return `${errorBin},${angleBin},${velBin}`;  // 5×8×3 = 120 states
+        };
+
+        /**
+         * Reward function: Encourage staying on circle with motion
+         * r = bonus_on_circle + bonus_moving - error_penalty - time_penalty - energy_cost
+         * 
+         * Design: Positive rewards dominate when on-circle and moving
+         */
+        const computeReward = (state, action, newState) => {
+            let reward = 0;
+            
+            // BIG bonus for being on the circle (dominates other penalties)
+            if (newState.error < ERROR_THRESHOLD) {
+                reward += 15;  // Large positive reward!
+            } else {
+                // Small penalty for being off circle
+                reward -= newState.error * 0.05;  // -0 to -5 max
+            }
+            
+            // Bonus for movement (encourages not getting stuck)
+            const speed = Math.hypot(newState.vx, newState.vy);
+            if (speed > 1) {
+                reward += 2;  // Bonus for moving
+            }
+            
+            // Small time penalty (encourages efficiency)
+            reward -= 0.05;
+            
+            // Tiny energy cost
+            const activeMagnets = action.pattern.filter(m => m === 1).length;
+            const strengthCost = (action.strength + 1);
+            reward -= 0.005 * activeMagnets * strengthCost;
+            
+            // Expected reward when successful: +15 + 2 - 0.05 - ~0.02 ≈ +17 per step
+            // Expected reward when failing: -5 - 0.05 - 0.02 ≈ -5 per step
+            
+            return reward;
+        };
+
+        // ====================================================================
+        // ACTIONS
+        // ====================================================================
+
+        // Magnet positions: [N, NE, E, SE, S, SW, W, NW]
+        const PATTERNS = [
+            [0,0,0,0,0,0,0,0], // All off
+            [1,0,0,0,0,0,0,0], // N  (index 0)
+            [0,0,1,0,0,0,0,0], // E  (index 2)
+            [0,0,0,0,1,0,0,0], // S  (index 4)
+            [0,0,0,0,0,0,1,0], // W  (index 6)
+            [0,1,0,0,0,0,0,0], // NE (index 1) - FIXED!
+            [0,0,0,1,0,0,0,0], // SE (index 3) - FIXED!
+            [0,0,0,0,0,1,0,0], // SW (index 5) - FIXED!
+            [0,0,0,0,0,0,0,1]  // NW (index 7) - FIXED!
+        ];
+        
+        const ACTIONS = [];
+        const STRENGTH_NAMES = ['OFF', 'MED', 'HIGH'];
+        const PATTERN_NAMES = ['OFF', 'N', 'E', 'S', 'W', 'NE', 'SE', 'SW', 'NW'];
+        
+        for (let p = 0; p < PATTERNS.length; p++) {
+            for (let s = 0; s < 3; s++) {
+                ACTIONS.push({
+                    pattern: PATTERNS[p],
+                    strength: s,
+                    id: ACTIONS.length,
+                    name: `${PATTERN_NAMES[p]}-${STRENGTH_NAMES[s]}`
+                });
+            }
+        }
+
+        // ====================================================================
+        // ENVIRONMENT
+        // ====================================================================
+
+        const environment = {
+            actions: ACTIONS,
+            
+            getState: (state) => stateToKey(state),
+            
+            step: (state, actionIdx) => {
+                const action = ACTIONS[actionIdx];
+                
+                const newPhysics = applyMagneticForces(state, action);
+                
+                const error = calculateCircleError(newPhysics.x, newPhysics.y);
+                const angle = calculateAngle(newPhysics.x, newPhysics.y);
+                
+                const newState = {
+                    ...state,
+                    ...newPhysics,
+                    error,
+                    angle,
+                    steps: state.steps + 1,
+                    timeOnCircle: error < ERROR_THRESHOLD ? state.timeOnCircle + 1 : state.timeOnCircle
+                };
+                
+                const reward = computeReward(state, action, newState);
+                
+                // Episode ends after maxSteps
+                const done = state.steps > CONFIG.maxSteps;
+                
+                return { state: newState, reward, done };
+            },
+            
+            reset: (clientId, oldState) => {
+                // Start at random position near circle
+                const randomAngle = Math.random() * Math.PI * 2;
+                const randomRadius = TARGET_RADIUS + (Math.random() - 0.5) * 40;
+                
+                return {
+                    x: CENTER.x + randomRadius * Math.cos(randomAngle),
+                    y: CENTER.y + randomRadius * Math.sin(randomAngle),
+                    vx: 0,
+                    vy: 0,
+                    fx: 0,
+                    fy: 0,
+                    error: Math.abs(randomRadius - TARGET_RADIUS),
+                    angle: randomAngle,
+                    steps: 0,
+                    timeOnCircle: 0
+                };
+            }
+        };
+
+        // ====================================================================
+        // RENDERING
+        // ====================================================================
+
+        const render = (ctx, state, client) => {
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, 400, 400);
+            
+            const actionIdx = client.lastAction !== undefined ? client.lastAction : 0;
+            const action = ACTIONS[actionIdx];
+            
+            // Draw target circle
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.arc(CENTER.x, CENTER.y, TARGET_RADIUS, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Draw tolerance band
+            ctx.strokeStyle = 'rgba(34, 197, 94, 0.3)';
+            ctx.lineWidth = ERROR_THRESHOLD * 2;
+            ctx.beginPath();
+            ctx.arc(CENTER.x, CENTER.y, TARGET_RADIUS, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Draw magnets
+            const magnetLabels = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+            
+            MAGNETS.forEach((mag, i) => {
+                const active = action.pattern[i] === 1;
+                const strength = active ? action.strength : 0;
+                
+                if (active && strength > 0) {
+                    // Active glow
+                    const glowSize = 35 + strength * 8;
+                    ctx.fillStyle = strength === 1 ? 
+                        'rgba(251, 191, 36, 0.7)' : 
+                        'rgba(239, 68, 68, 0.8)';
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, glowSize, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.fillStyle = strength === 1 ? '#fbbf24' : '#ef4444';
+                } else {
+                    ctx.fillStyle = 'rgba(30, 41, 59, 0.5)';
+                }
+                
+                ctx.beginPath();
+                ctx.arc(mag.x, mag.y, 12, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = active && strength > 0 ? '#ffffff' : '#64748b';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(magnetLabels[i], mag.x, mag.y);
+            });
+            
+            // Draw object
+            const onCircle = state.error < ERROR_THRESHOLD;
+            ctx.fillStyle = onCircle ? '#22c55e' : '#3b82f6';
+            ctx.beginPath();
+            ctx.arc(state.x, state.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw line to circle
+            const targetAngle = calculateAngle(state.x, state.y);
+            const targetX = CENTER.x + TARGET_RADIUS * Math.cos(targetAngle);
+            const targetY = CENTER.y + TARGET_RADIUS * Math.sin(targetAngle);
+            
+            ctx.strokeStyle = onCircle ? '#22c55e' : '#ef4444';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(state.x, state.y);
+            ctx.lineTo(targetX, targetY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Stats
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Error: ${state.error.toFixed(1)}px`, 10, 20);
+            ctx.fillText(`On Circle: ${state.timeOnCircle} steps`, 10, 35);
+            ctx.fillText(`Success: ${(state.timeOnCircle / Math.max(1, state.steps) * 100).toFixed(1)}%`, 10, 50);
+            ctx.fillText(`Speed: ${Math.hypot(state.vx, state.vy).toFixed(1)}`, 10, 65);
+            
+            ctx.fillStyle = onCircle ? '#22c55e' : '#ef4444';
+            ctx.fillText(onCircle ? '✓ ON TARGET' : '✗ OFF TARGET', 10, 85);
+        };
+
+        // ====================================================================
+        // CREATE APP
+        // ====================================================================
+
+        console.log('🎯 CURRICULUM STEP 1: Circular Motion Training');
+        console.log('State Space: 5×8×3 = 120 states (vs 300 for slalom)');
+        console.log('Task: Keep object within 15px of circle (r=100px)');
+        console.log('Reward: Dense (every step) vs Sparse (flags only)');
+        console.log('Expected: Faster learning, foundation for slalom');
+
+        const app = createFederatedApp({
+            name: '🎯 Circle Training (Step 1)',
+            subtitle: 'Learn magnet control • Dense rewards • Live tuning',
+            
+            numClients: 4,
+            canvasWidth: 400,
+            canvasHeight: 400,
+            renderInterval: CONFIG.renderInterval,
+            
+            // Hyperparameters from CONFIG
+            alpha: CONFIG.alpha,
+            gamma: CONFIG.gamma,
+            epsilon: CONFIG.epsilon,
+            epsilonDecay: CONFIG.epsilonDecay,
+            minEpsilon: CONFIG.minEpsilon,
+            
+            autoFederate: false,
+            federationInterval: 50,  // More frequent (simpler task)
+            
+            environment,
+            render,
+            
+            // Metrics configuration (KPIs for evaluation)
+            metrics: DEFAULT_CONFIGS.circleFollowing,
+            
+            onEpisodeEnd: (client, completedEpisode) => {
+                const successRate = (client.state.timeOnCircle / client.state.steps * 100).toFixed(1);
+                const qSize = Object.keys(client.agent.getModel()).length;
+                
+                console.log(`Client ${client.id}: ${successRate}% on circle, Q: ${qSize}/120 states, ε=${client.agent.getEpsilon().toFixed(3)}`);
+            }
+        });
+        
+        // ====================================================================
+        // LIVE CONTROLS - ONE LINE!
+        // ====================================================================
+        
+        // Create control panel - that's it!
+        setTimeout(() => {
+            createLiveControls(app, CONFIG);
+        }, 500);
+    </script>
+</body>
+</html>
+

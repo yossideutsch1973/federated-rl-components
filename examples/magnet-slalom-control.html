@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>🧲 Electromagnetic Slalom Control</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff; 
+            font-family: monospace; 
+        }
+        #app { max-width: 1800px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module">
+        /**
+         * ELECTROMAGNETIC SLALOM CONTROL
+         * 
+         * Tests component library reusability with field-based physics.
+         * LEARNABLE MAGNETIC STRENGTH LEVELS!
+         * 
+         * State: 300 states (relX×relY×vMag×vDir = 5×5×3×4)
+         * Actions: 27 actions (9 patterns × 3 strengths) - INTERLEAVED
+         *   - Patterns: OFF, N, E, S, W, NE, SE, SW, NW
+         *   - Strengths: OFF (k=0), MED (k=50k), HIGH (k=100k)
+         * Physics: F = Σ(k_s/r²) for active magnets, r = ‖p_mag - p_obj‖
+         *   At r=180px: F_med≈1.5, F_high≈3.1
+         * Reward: r = +100·δ_flag - 0.1·t - 0.01·n_active·(s+1) + 5·(1 - d/d_max)
+         * 
+         * Q-Table: 300 × 27 = 8,100 values
+         */
+
+        // ====================================================================
+        // IMPORTS
+        // ====================================================================
+        import { createFederatedApp } from '../components/app-template.js';
+        import { discretize } from '../components/rl-core.js';
+        import { createLiveControls } from '../components/live-controls.js';
+
+        // ====================================================================
+        // CONFIGURATION (LIVE ADJUSTABLE)
+        // ====================================================================
+        
+        const CONFIG = {
+            // Physics
+            strengthMed: 50000,
+            strengthHigh: 100000,
+            friction: 0.88,
+            maxVelocity: 15,
+            
+            // Training
+            maxSteps: 1000,      // Episode length (reduced from 5000)
+            alpha: 0.15,
+            gamma: 0.95,
+            epsilon: 0.3,
+            epsilonDecay: 0.98,
+            minEpsilon: 0.01,
+            
+            // Rewards
+            flagReward: 100,
+            timeReward: -0.1,
+            energyReward: -0.01,
+            proximityReward: 5,
+            
+            // Performance
+            renderInterval: 50   // Render every 50 frames (faster training)
+        };
+        
+        const PHYSICS_CONFIG = {
+            get strengthLevels() { return [0, CONFIG.strengthMed, CONFIG.strengthHigh]; },
+            minDistance: 30,
+            get friction() { return CONFIG.friction; },
+            get maxVelocity() { return CONFIG.maxVelocity; },
+            flagRadius: 25,
+            dt: 1.0
+        };
+
+        const MAGNETS = [
+            {x: 200, y: 20},    // N
+            {x: 340, y: 60},    // NE
+            {x: 380, y: 200},   // E
+            {x: 340, y: 340},   // SE
+            {x: 200, y: 380},   // S
+            {x: 60, y: 340},    // SW
+            {x: 20, y: 200},    // W
+            {x: 60, y: 60}      // NW
+        ];
+
+        // ====================================================================
+        // PURE FUNCTIONS (Functional Programming)
+        // ====================================================================
+
+        /**
+         * Apply magnetic forces to object
+         * Formula: F = Σ(k_i/r² × û) for active magnets
+         *   where û = (p_mag - p_obj)/r is unit direction
+         *   k_i = strength level (0, medium, high)
+         * @pure
+         * @param {Object} state - Current state {x, y, vx, vy}
+         * @param {Object} action - {pattern: [0|1,...], strength: 0|1|2}
+         * @param {Object} config - Physics config
+         * @returns {Object} New physics state {x, y, vx, vy, fx, fy}
+         */
+        const applyMagneticForces = (state, action, config = PHYSICS_CONFIG) => {
+            let fx = 0, fy = 0;
+            
+            // Get strength multiplier
+            const magnetStrength = config.strengthLevels[action.strength];
+            
+            // Sum forces from all active magnets
+            action.pattern.forEach((magnetOn, i) => {
+                if (!magnetOn) return;
+                
+                const mag = MAGNETS[i];
+                const dx = mag.x - state.x;
+                const dy = mag.y - state.y;
+                const r = Math.max(
+                    Math.hypot(dx, dy), 
+                    config.minDistance
+                );
+                
+                const forceMag = magnetStrength / (r * r);
+                fx += forceMag * dx / r;
+                fy += forceMag * dy / r;
+            });
+            
+            // Update velocity with friction
+            let vx = state.vx * config.friction + fx * config.dt;
+            let vy = state.vy * config.friction + fy * config.dt;
+            
+            // Clamp velocity
+            const vMag = Math.hypot(vx, vy);
+            if (vMag > config.maxVelocity) {
+                const scale = config.maxVelocity / vMag;
+                vx *= scale;
+                vy *= scale;
+            }
+            
+            // Update position with boundary constraints
+            let x = state.x + vx * config.dt;
+            let y = state.y + vy * config.dt;
+            
+            // Keep within arena bounds (10px margin)
+            if (x < 10) { x = 10; vx = 0; }
+            if (x > 390) { x = 390; vx = 0; }
+            if (y < 10) { y = 10; vy = 0; }
+            if (y > 390) { y = 390; vy = 0; }
+            
+            return { x, y, vx, vy, fx, fy }; // Include forces for visualization
+        };
+
+        /**
+         * State to key mapping (discretization)
+         * Formula: key = "relX,relY,vMag,vDir"
+         * @pure
+         * @param {Object} state - Current state
+         * @returns {string} State key for Q-table
+         */
+        const stateToKey = (state) => {
+            const flag = state.flags[state.currentFlag];
+            if (!flag) return '0,0,0,0';
+            
+            // Relative position to next flag
+            const relX = flag.x - state.x;
+            const relY = flag.y - state.y;
+            
+            // Velocity in polar coordinates
+            const vMag = Math.hypot(state.vx, state.vy);
+            const vDir = Math.atan2(state.vy, state.vx);
+            
+            // Discretize
+            const rx = discretize(relX, 5, -200, 200);
+            const ry = discretize(relY, 5, -200, 200);
+            const vm = discretize(vMag, 3, 0, 8);
+            const vd = discretize(vDir, 4, -Math.PI, Math.PI);
+            
+            return `${rx},${ry},${vm},${vd}`;
+        };
+
+        /**
+         * Compute reward with energy penalty (strength-dependent)
+         * Formula: r = r_flag + r_time + r_energy + r_proximity
+         *   r_flag = +100·δ_flag
+         *   r_time = -0.1
+         *   r_energy = -0.01·n_active·strength
+         *   r_proximity = +5·(1 - d/d_max)
+         * Episode timeout: 5000 steps
+         * @pure
+         */
+        const computeReward = (state, action, newState) => {
+            let reward = CONFIG.timeReward; // Time penalty
+            
+            // Energy cost (scales with strength)
+            const activeMagnets = action.pattern.filter(m => m === 1).length;
+            const strengthCost = (action.strength + 1); // 1, 2, or 3
+            reward += CONFIG.energyReward * activeMagnets * strengthCost;
+            
+            // Flag passage bonus
+            if (newState.currentFlag > state.currentFlag) {
+                reward += CONFIG.flagReward;
+            } else {
+                // Proximity shaping
+                const flag = state.flags[state.currentFlag];
+                if (flag) {
+                    const dist = Math.hypot(newState.x - flag.x, newState.y - flag.y);
+                    reward += CONFIG.proximityReward * (1 - dist / 400);
+                }
+            }
+            
+            return reward;
+        };
+
+        // ====================================================================
+        // RL ENVIRONMENT
+        // ====================================================================
+
+        // Magnet patterns (9 directional presets)
+        // Magnet positions: [N, NE, E, SE, S, SW, W, NW]
+        const PATTERNS = [
+            [0,0,0,0,0,0,0,0], // All off
+            [1,0,0,0,0,0,0,0], // N  (index 0)
+            [0,0,1,0,0,0,0,0], // E  (index 2)
+            [0,0,0,0,1,0,0,0], // S  (index 4)
+            [0,0,0,0,0,0,1,0], // W  (index 6)
+            [0,1,0,0,0,0,0,0], // NE (index 1) - FIXED!
+            [0,0,0,1,0,0,0,0], // SE (index 3) - FIXED!
+            [0,0,0,0,0,1,0,0], // SW (index 5) - FIXED!
+            [0,0,0,0,0,0,0,1]  // NW (index 7) - FIXED!
+        ];
+        
+        // Generate all actions: 9 patterns × 3 strengths = 27 actions
+        // Action format: {pattern: [...], strength: 0|1|2, id: idx}
+        // IMPORTANT: Interleave strengths so exploration finds useful actions early!
+        const ACTIONS = [];
+        const STRENGTH_NAMES = ['OFF', 'MED', 'HIGH'];
+        const PATTERN_NAMES = ['OFF', 'N', 'E', 'S', 'W', 'NE', 'SE', 'SW', 'NW'];
+        
+        for (let p = 0; p < PATTERNS.length; p++) {
+            for (let s = 0; s < 3; s++) {
+                ACTIONS.push({
+                    pattern: PATTERNS[p],
+                    strength: s,
+                    id: ACTIONS.length,
+                    name: `${PATTERN_NAMES[p]}-${STRENGTH_NAMES[s]}`
+                });
+            }
+        }
+        
+        console.log(`Generated ${ACTIONS.length} actions (9 patterns × 3 strengths)`);
+
+        const environment = {
+            actions: ACTIONS,
+            
+            getState: (state) => stateToKey(state),
+            
+            step: (state, actionIdx) => {
+                const action = ACTIONS[actionIdx];
+                
+                // Apply physics
+                const newPhysics = applyMagneticForces(state, action);
+                
+                // Check flag passage
+                let currentFlag = state.currentFlag;
+                const flag = state.flags[currentFlag];
+                
+                if (flag) {
+                    const dist = Math.hypot(newPhysics.x - flag.x, newPhysics.y - flag.y);
+                    if (dist < PHYSICS_CONFIG.flagRadius) {
+                        currentFlag++;
+                    }
+                }
+                
+                // Build new state
+                const newState = {
+                    ...state,
+                    ...newPhysics,
+                    currentFlag,
+                    steps: state.steps + 1
+                };
+                
+                // Compute reward
+                const reward = computeReward(state, action, newState);
+                
+                // Check termination
+                const done = currentFlag >= state.flags.length || state.steps > CONFIG.maxSteps;
+                
+                return { state: newState, reward, done };
+            },
+            
+            reset: (clientId, oldState) => {
+                // Generate random slalom course
+                const flags = [];
+                for (let i = 0; i < 8; i++) {
+                    flags.push({
+                        x: 100 + Math.random() * 200,
+                        y: 50 + i * 40
+                    });
+                }
+                
+                return {
+                    x: 200,          // Center of arena
+                    y: 200,          // Center of arena (NOT on top of magnet!)
+                    vx: 0,
+                    vy: 0,
+                    fx: 0,           // Current force x
+                    fy: 0,           // Current force y
+                    flags,
+                    currentFlag: 0,
+                    steps: 0
+                };
+            }
+        };
+
+        // ====================================================================
+        // RENDERING
+        // ====================================================================
+
+        const render = (ctx, state, client) => {
+            // Clear
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, 400, 400);
+            
+            // Get current action
+            const actionIdx = client.lastAction !== undefined ? client.lastAction : 0;
+            const action = ACTIONS[actionIdx];
+            
+            // Strength-based colors
+            const strengthColors = [
+                { outer: 'rgba(71, 85, 105, 0.4)', inner: '#334155', center: '#1e293b' },  // OFF
+                { outer: 'rgba(251, 191, 36, 0.4)', inner: '#fbbf24', center: '#fde68a' }, // MED (yellow)
+                { outer: 'rgba(239, 68, 68, 0.4)', inner: '#ef4444', center: '#fca5a5' }   // HIGH (red)
+            ];
+            
+            // Draw magnets with field lines
+            const magnetLabels = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+            
+            // DEBUG: Show action pattern on screen
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Pattern: [${action.pattern.join(',')}]`, 10, 110);
+            ctx.fillText(`Strength: ${action.strength} (${['OFF','MED','HIGH'][action.strength]})`, 10, 125);
+            ctx.fillText(`Action: ${action.name}`, 10, 140);
+            
+            MAGNETS.forEach((mag, i) => {
+                const active = action.pattern[i] === 1;
+                const strength = active ? action.strength : 0;
+                const colors = strengthColors[strength];
+                
+                // DEBUG: Log which magnets are ON every 50 steps
+                if (state.steps % 50 === 0 && active && strength > 0) {
+                    console.log(`🔥 Magnet ${i} (${magnetLabels[i]}) FIRING at strength ${strength}`);
+                }
+                
+                // Field lines when active (draw first so they appear behind)
+                if (active && strength > 0) {
+                    const alpha = strength === 1 ? 0.4 : 0.6;
+                    const color = strength === 1 ? '251, 191, 36' : '239, 68, 68';
+                    ctx.strokeStyle = `rgba(${color}, ${alpha})`;
+                    ctx.lineWidth = 4;
+                    for (let r = 25; r < 100; r += 20) {
+                        ctx.beginPath();
+                        ctx.arc(mag.x, mag.y, r, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+                
+                // MASSIVE glow when active
+                if (active && strength > 0) {
+                    const glowSize = 35 + strength * 8; // HUGE: 43px for MED, 51px for HIGH
+                    ctx.fillStyle = strength === 1 ? 
+                        'rgba(251, 191, 36, 0.7)' : 
+                        'rgba(239, 68, 68, 0.8)';
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, glowSize, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                
+                // Outer ring - colored by strength
+                if (active && strength > 0) {
+                    ctx.strokeStyle = strength === 1 ? '#fbbf24' : '#ef4444';
+                    ctx.lineWidth = 5;
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 18, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                
+                // Inner core - EXTREME contrast
+                if (active && strength > 0) {
+                    // ACTIVE: MASSIVE bright colored fill
+                    ctx.fillStyle = strength === 1 ? '#fbbf24' : '#ef4444';
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 15, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // White border when firing
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 15, 0, Math.PI * 2);
+                    ctx.stroke();
+                    
+                    // Big white center
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Label - BIG and WHITE
+                    ctx.fillStyle = '#000000';
+                    ctx.font = 'bold 11px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(magnetLabels[i], mag.x, mag.y);
+                    
+                    // Add "ON" indicator below magnet
+                    ctx.fillStyle = strength === 1 ? '#fbbf24' : '#ef4444';
+                    ctx.font = 'bold 9px monospace';
+                    ctx.fillText('ON', mag.x, mag.y + 22);
+                } else {
+                    // INACTIVE: Very dim, almost invisible
+                    ctx.fillStyle = 'rgba(30, 41, 59, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 12, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Thin gray border
+                    ctx.strokeStyle = 'rgba(71, 85, 105, 0.5)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.arc(mag.x, mag.y, 12, 0, Math.PI * 2);
+                    ctx.stroke();
+                    
+                    // Dim label
+                    ctx.fillStyle = 'rgba(100, 116, 139, 0.6)';
+                    ctx.font = '9px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(magnetLabels[i], mag.x, mag.y);
+                }
+            });
+            
+            // Draw flags
+            state.flags.forEach((flag, i) => {
+                const passed = i < state.currentFlag;
+                const current = i === state.currentFlag;
+                
+                if (passed) {
+                    // Passed flag (checkmark)
+                    ctx.strokeStyle = '#10b981';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(flag.x, flag.y, 20, 0, Math.PI * 2);
+                    ctx.stroke();
+                } else {
+                    // Upcoming flag
+                    ctx.fillStyle = current ? '#22c55e' : '#64748b';
+                    ctx.beginPath();
+                    ctx.arc(flag.x, flag.y, 20, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Flag number
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '12px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(i + 1, flag.x, flag.y + 4);
+                }
+            });
+            
+            // Draw force vector (magnetic pull)
+            if (state.fx !== undefined && state.fy !== undefined) {
+                const forceMag = Math.hypot(state.fx, state.fy);
+                if (forceMag > 0.1) {
+                    ctx.strokeStyle = '#fbbf24'; // Yellow for force
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(state.x, state.y);
+                    ctx.lineTo(state.x + state.fx * 10, state.y + state.fy * 10);
+                    ctx.stroke();
+                    
+                    // Arrowhead
+                    const angle = Math.atan2(state.fy, state.fx);
+                    const headLen = 8;
+                    ctx.beginPath();
+                    ctx.moveTo(state.x + state.fx * 10, state.y + state.fy * 10);
+                    ctx.lineTo(
+                        state.x + state.fx * 10 - headLen * Math.cos(angle - Math.PI / 6),
+                        state.y + state.fy * 10 - headLen * Math.sin(angle - Math.PI / 6)
+                    );
+                    ctx.lineTo(
+                        state.x + state.fx * 10 - headLen * Math.cos(angle + Math.PI / 6),
+                        state.y + state.fy * 10 - headLen * Math.sin(angle + Math.PI / 6)
+                    );
+                    ctx.lineTo(state.x + state.fx * 10, state.y + state.fy * 10);
+                    ctx.fill();
+                }
+            }
+            
+            // Draw object
+            ctx.fillStyle = '#3b82f6';
+            ctx.fillRect(state.x - 5, state.y - 5, 10, 10);
+            
+            // Velocity vector (cyan)
+            if (Math.hypot(state.vx, state.vy) > 0.1) {
+                ctx.strokeStyle = '#22d3ee';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(state.x, state.y);
+                ctx.lineTo(state.x + state.vx * 5, state.y + state.vy * 5);
+                ctx.stroke();
+            }
+            
+            // Stats
+            ctx.fillStyle = '#fff';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Flags: ${state.currentFlag}/${state.flags.length}`, 10, 15);
+            ctx.fillText(`Steps: ${state.steps}`, 10, 30);
+            ctx.fillText(`Speed: ${Math.hypot(state.vx, state.vy).toFixed(1)}`, 10, 45);
+            
+            // Current action
+            if (action.name) {
+                const strengthColor = action.strength === 0 ? '#94a3b8' : 
+                                     action.strength === 1 ? '#fbbf24' : '#ef4444';
+                ctx.fillStyle = strengthColor;
+                ctx.fillText(`Action: ${action.name}`, 10, 60);
+            }
+            
+            // Active magnets count
+            const activeCount = action.pattern.filter(m => m === 1).length;
+            ctx.fillStyle = '#fff';
+            ctx.fillText(`Magnets: ${activeCount}/8`, 10, 75);
+            
+            // Show magnetic force magnitude
+            if (state.fx !== undefined && state.fy !== undefined) {
+                const forceMag = Math.hypot(state.fx, state.fy);
+                const forceStr = PHYSICS_CONFIG.strengthLevels[action.strength];
+                ctx.fillStyle = '#fbbf24';
+                ctx.fillText(`Force: ${forceMag.toFixed(2)} (k=${forceStr})`, 10, 90);
+            }
+        };
+
+        // ====================================================================
+        // CREATE APP
+        // ====================================================================
+
+        console.log('🧲 Electromagnetic Slalom Control');
+        console.log('State Space: 5×5×3×4 = 300 states');
+        console.log('  - RelX to flag: 5 bins [-200, 200]');
+        console.log('  - RelY to flag: 5 bins [-200, 200]');
+        console.log('  - Velocity magnitude: 3 bins [0, 8]');
+        console.log('  - Velocity direction: 4 bins [-π, π]');
+        console.log('Action Space: 9 patterns × 3 strengths = 27 actions');
+        console.log('  - Patterns: OFF, N, E, S, W, NE, SE, SW, NW');
+        console.log('  - Strengths: OFF (k=0), MED (k=50k), HIGH (k=100k) - LEARNABLE!');
+        console.log('  - Action ordering: Interleaved (e.g., 0-2: OFF at all strengths)');
+        console.log('Q-Table Size: 300 states × 27 actions = 8,100 values');
+        console.log('Physics: Field-based (F = k/r²), strength-dependent');
+        console.log('  At r=180px: F_med=1.5, F_high=3.1 (was 0.006!)');
+        console.log('Magnets: 8 around perimeter, 3 strength levels');
+
+        const app = createFederatedApp({
+            name: '🧲 Electromagnetic Slalom',
+            subtitle: '8 magnets • 3 learnable strength levels • Live tuning',
+            
+            numClients: 4,
+            canvasWidth: 400,
+            canvasHeight: 400,
+            renderInterval: CONFIG.renderInterval,
+            
+            // Hyperparameters (from CONFIG)
+            alpha: CONFIG.alpha,
+            gamma: CONFIG.gamma,
+            epsilon: CONFIG.epsilon,
+            epsilonDecay: CONFIG.epsilonDecay,
+            minEpsilon: CONFIG.minEpsilon,
+            
+            // Federation
+            autoFederate: false,
+            federationInterval: 100,
+            
+            // Environment
+            environment,
+            render,
+            
+            // Lifecycle
+            onEpisodeEnd: (client, completedEpisode) => {
+                const success = client.state.currentFlag >= client.state.flags.length;
+                const rate = Math.round(client.state.currentFlag / client.state.flags.length * 100);
+                const qSize = Object.keys(client.agent.getModel()).length;
+                
+                console.log(`Client ${client.id}: ${client.state.currentFlag}/8 flags (${rate}%), Q: ${qSize} states, ε=${client.agent.getEpsilon().toFixed(3)}`);
+            }
+        });
+        
+        // ====================================================================
+        // LIVE CONTROLS - ONE LINE!
+        // ====================================================================
+        
+        // Create control panel - that's it!
+        setTimeout(() => {
+            createLiveControls(app, CONFIG);
+        }, 500);
+    </script>
+</body>
+</html>
+

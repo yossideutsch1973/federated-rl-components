@@ -51,6 +51,7 @@ export const createFederatedApp = (config) => {
         numClients = 4,
         canvasWidth = 300,
         canvasHeight = 220,
+        renderInterval = 50,  // Render every N steps (higher = faster, less smooth)
         
         // RL parameters
         alpha = 0.1,
@@ -73,7 +74,10 @@ export const createFederatedApp = (config) => {
         // Lifecycle hooks (optional)
         onClientInit = null,
         onEpisodeEnd = null,
-        onFederation = null
+        onFederation = null,
+        
+        // Metrics/KPIs configuration (optional)
+        metrics = null
     } = config;
 
     // Validate required fields
@@ -95,6 +99,9 @@ export const createFederatedApp = (config) => {
 
     // Mode state
     let currentMode = MODES.TRAINING;
+    
+    // Make renderInterval mutable for live updates
+    let _renderInterval = renderInterval;
 
     // Toast notification system (non-blocking feedback)
     const showToast = (title, message = '', duration = 3000) => {
@@ -174,7 +181,7 @@ export const createFederatedApp = (config) => {
         label: 'Clients:',
         id: 'client-count-input',
         defaultValue: numClients,
-        attrs: { min: 1, max: 100 },
+        attrs: { min: 1, max: 1000 },
         container: layout.controls
     });
 
@@ -341,6 +348,9 @@ export const createFederatedApp = (config) => {
         const stateKey = environment.getState(client.state);
         const action = client.agent.chooseAction(stateKey);
         
+        // Store action for rendering
+        client.lastAction = action;
+        
         // Support both sync and async step functions
         const stepResult = environment.step(client.state, action);
         const { state: nextState, reward, done } = stepResult instanceof Promise ? await stepResult : stepResult;
@@ -373,17 +383,22 @@ export const createFederatedApp = (config) => {
             }
         }
         
-        // Render if provided
-        if (render) {
+        // Render if provided (throttled by renderInterval)
+        if (render && frameCount % _renderInterval === 0) {
             render(client.ctx, client.state, client);
         }
         
         updateClientDisplay(client);
     };
 
+    // Frame counter for render throttling
+    let frameCount = 0;
+
     // Animation loop (supports async step functions)
     const animate = async () => {
         if (!isRunning) return;
+
+        frameCount++;
 
         // Step all clients IN PARALLEL for maximum performance
         await Promise.all(clients.map(client => stepClient(client)));
@@ -502,6 +517,7 @@ export const createFederatedApp = (config) => {
                 environment,
                 getState: environment.getState,
                 numEpisodes,
+                metricsConfig: metrics,
                 renderFn: render,
                 ctx: clients[0].ctx,
                 onEpisodeComplete: (episodeResult, current, total) => {
@@ -819,7 +835,15 @@ export const createFederatedApp = (config) => {
 
     clientCountInput.onchange = () => {
         const count = parseInt(clientCountInput.value);
-        if (count >= 1 && count <= 100) {
+        if (count >= 1 && count <= 1000) {
+            // Warn about performance with large client counts
+            if (count > 100 && _renderInterval < 10) {
+                console.warn(`⚠️ Using ${count} clients with renderInterval=${_renderInterval}.`);
+                console.warn('   Consider increasing renderInterval to 50-100 for better performance.');
+            }
+            if (count > 500) {
+                console.warn(`⚠️ ${count} clients may cause UI lag. Recommended: renderInterval ≥ 100`);
+            }
             initClients(count);
         }
     };
@@ -845,9 +869,15 @@ export const createFederatedApp = (config) => {
         reset: () => {
             buttons['btn-reset'].click();
         },
+        setRenderInterval: (value) => {
+            _renderInterval = Math.max(1, Math.min(1000, value));
+            console.log(`🎨 Render interval updated to ${_renderInterval}`);
+        },
+        getRenderInterval: () => _renderInterval,
         getClients: () => clients,
         getFedManager: () => fedManager,
-        isRunning: () => isRunning
+        isRunning: () => isRunning,
+        clients // Expose clients directly for live-controls
     };
 };
 

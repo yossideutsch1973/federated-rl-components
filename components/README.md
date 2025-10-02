@@ -22,8 +22,9 @@ const app = createFederatedApp({
     reset: () => ({ x: 0, y: 0 })
   },
   
-  render: (ctx, state) => {
+  render: (ctx, state, client) => {
     // Draw your environment
+    // client.lastAction available for visualization
   }
 });
 
@@ -32,7 +33,70 @@ app.start();
 
 ## 📦 Components
 
-### 1. `rl-core.js` - Pure RL Algorithms
+### 1. `live-controls.js` - Real-Time Parameter Tuning ⚡NEW!
+
+**Add a live control panel with ONE LINE of code!**
+
+```javascript
+import { createLiveControls } from './components/live-controls.js';
+
+// Define your config object
+const CONFIG = {
+  alpha: 0.15,
+  gamma: 0.95,
+  epsilon: 0.3,
+  maxSteps: 1000,
+  strengthMed: 50000,
+  // ... any parameters you want to tune
+};
+
+// Create the app
+const app = createFederatedApp({
+  alpha: CONFIG.alpha,
+  gamma: CONFIG.gamma,
+  // ...
+});
+
+// Add live controls - THAT'S IT!
+createLiveControls(app, CONFIG);
+```
+
+**Features:**
+- 🎛️ **Auto-generates sliders** for all parameters in CONFIG
+- 🔄 **Real-time updates** - change values while training runs
+- 📊 **Organized by category** (Training, Physics, Rewards)
+- ✅ **Apply to agents** button - updates all agents instantly
+- 🔄 **Reset** button - restore defaults
+- 👁️ **Toggle visibility** - hide/show panel
+- 🎨 **Beautiful UI** - fixed position, scrollable, always on top
+
+**Supported Parameters:**
+- Training: `alpha`, `gamma`, `epsilon`, `epsilonDecay`, `minEpsilon`, `maxSteps`
+- Physics: `strengthMed`, `strengthHigh`, `friction`, `maxVelocity`
+- Rewards: `flagReward`, `timeReward`, `energyReward`, `proximityReward`
+- Performance: `renderInterval` (1-100, **updates instantly**, higher = faster but less smooth)
+- Custom: Add any numeric parameter!
+
+**Toggle Methods:**
+- **In-panel button:** Click "Hide Panel" 
+- **FAB button:** Click the ⚙️ button (bottom-right when hidden)
+- **Keyboard:** Press `Ctrl+K` anytime
+
+**API:**
+```javascript
+const controls = createLiveControls(app, CONFIG);
+
+controls.hide();              // Hide panel
+controls.show();              // Show panel
+controls.toggle();            // Toggle visibility
+controls.destroy();           // Remove panel and FAB
+const current = controls.getConfig();  // Get current values
+const visible = controls.isVisible();  // Check if visible
+```
+
+---
+
+### 2. `rl-core.js` - Pure RL Algorithms
 
 **Pure functional RL algorithms with no dependencies.**
 
@@ -190,8 +254,13 @@ const app = createFederatedApp({
   },
   
   // Rendering (optional)
+  // Signature: (ctx, state, client)
+  // - ctx: Canvas 2D context
+  // - state: Current environment state
+  // - client: Client object with { id, lastAction, agent, ... }
   render: (ctx, state, client) => {
     // Draw environment
+    // Use client.lastAction to visualize current action
   },
   
   // Hooks (optional)
@@ -212,9 +281,22 @@ app.reset();
 - `pause()` - Pause training
 - `federate()` - Trigger federation
 - `reset()` - Reset all clients
+- `setRenderInterval(value)` - Update render throttling in real-time
+- `getRenderInterval()` - Get current render interval
 - `getClients()` - Get client array
 - `getFedManager()` - Get federation manager
 - `isRunning()` - Check if running
+
+**Render Function Signature:**
+
+The render function receives 3 parameters: `(ctx, state, client)`. The `client` parameter is **always provided** in both training and inference modes, containing:
+- `client.id` - Client identifier
+- `client.lastAction` - Most recent action taken (useful for visualization)
+- `client.ctx` - Canvas context
+- `client.state` - Current state
+- `client.agent` - Agent reference (training mode only)
+
+**Note:** For backward compatibility, functions that only accept `(ctx, state)` will still work (the extra parameter is ignored).
 
 ## 🚀 Examples
 

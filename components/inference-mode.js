@@ -3,10 +3,13 @@
  * 
  * Provides frozen model evaluation with aggregate metrics.
  * Runs N test episodes with ε=0 (greedy policy) and α=0 (no learning).
+ * Supports custom KPI tracking via metrics-core.js.
  * 
  * @module inference-mode
  * @version 1.0.0
  */
+
+import { createEpisodeTracker, DEFAULT_CONFIGS } from './metrics-core.js';
 
 import { createTabularAgent } from './rl-core.js';
 
@@ -73,6 +76,7 @@ export const createInferenceAgent = (model, numActions) => {
  * @param {Object} config.environment - Environment definition
  * @param {Function} config.getState - State function
  * @param {number} config.numEpisodes - Number of test episodes
+ * @param {Object} config.metricsConfig - KPI/metrics configuration
  * @param {Function} config.onEpisodeComplete - Callback after each episode
  * @param {Function} config.onAllComplete - Callback after all episodes
  * @returns {Promise<Object>} Evaluation results
@@ -83,6 +87,7 @@ export const runEvaluation = async (config) => {
         environment,
         getState,
         numEpisodes = INFERENCE_CONFIG.defaultTestEpisodes,
+        metricsConfig = DEFAULT_CONFIGS.rewardBased,
         onEpisodeComplete = null,
         onAllComplete = null,
         renderFn = null,
@@ -107,6 +112,7 @@ export const runEvaluation = async (config) => {
             environment,
             getState,
             episodeNum: ep,
+            metricsConfig,
             renderFn,
             ctx
         });
@@ -162,55 +168,59 @@ const runSingleEpisode = async (config) => {
         environment,
         getState,
         episodeNum,
+        metricsConfig,
         renderFn,
         ctx
     } = config;
 
+    // Create metrics tracker
+    const tracker = createEpisodeTracker(metricsConfig);
+    let episodeData = tracker.init();
+
     let state = environment.reset(0); // clientId = 0 for inference
-    let totalReward = 0;
-    let steps = 0;
     let done = false;
+    
+    // Mock client object for consistent render interface
+    const mockClient = {
+        id: 0,
+        ctx,
+        state,
+        lastAction: undefined
+    };
 
-    const trajectory = [];
-
-    while (!done && steps < INFERENCE_CONFIG.maxStepsPerEpisode) {
+    while (!done && episodeData.steps < INFERENCE_CONFIG.maxStepsPerEpisode) {
         const stateKey = getState(state);
         const action = agent.chooseAction(stateKey);
 
         const stepResult = environment.step(state, action);
+        const reward = stepResult.reward;
         state = stepResult.state;
-        totalReward += stepResult.reward;
         done = stepResult.done;
-        steps++;
 
-        trajectory.push({
-            state: { ...state },
-            action,
-            reward: stepResult.reward
-        });
+        // Track step with KPIs
+        episodeData = tracker.step(episodeData, state, action, reward);
 
-        // Render if function provided
+        // Update mock client with current state and action
+        mockClient.state = state;
+        mockClient.lastAction = action;
+
+        // Render if function provided (consistent 3-param interface)
         if (renderFn && ctx) {
-            renderFn(ctx, state);
+            renderFn(ctx, state, mockClient);
         }
 
         // Allow browser to render
-        if (steps % 10 === 0) {
+        if (episodeData.steps % 10 === 0) {
             await new Promise(resolve => requestAnimationFrame(resolve));
         }
     }
 
-    // Determine success (domain-specific logic in environment)
-    const success = state.catches > 0 || (state.bounces && state.bounces > 0);
+    // Finalize episode (computes KPIs and success)
+    episodeData = tracker.finalize(episodeData, state);
+    episodeData.episodeNum = episodeNum;
+    episodeData.finalState = state;
 
-    return {
-        episodeNum,
-        totalReward,
-        steps,
-        success,
-        trajectory,
-        finalState: state
-    };
+    return episodeData;
 };
 
 // ============================================================================
@@ -475,6 +485,38 @@ export const updateResults = (contentElement, results, current = null, total = n
                     </div>
                 </div>
             `;
+        }
+        
+        // Display KPIs if available
+        if (results.episodes.length > 0 && results.episodes[0].kpis) {
+            const firstEp = results.episodes[0];
+            const kpiKeys = Object.keys(firstEp.kpis);
+            
+            if (kpiKeys.length > 0) {
+                html += `
+                    <div style="margin-top:20px; border-top:2px solid #334155; padding-top:16px;">
+                        <div style="color:#fbbf24; font-weight:600; margin-bottom:12px;">📊 KPIs</div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                `;
+                
+                kpiKeys.forEach(key => {
+                    // Calculate average across all episodes
+                    const avg = results.episodes.reduce((sum, ep) => sum + (ep.kpis[key] || 0), 0) / results.episodes.length;
+                    const displayName = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                    
+                    html += `
+                        <div>
+                            <div style="color:#64748b; font-size:11px;">${displayName.toUpperCase()}</div>
+                            <div style="color:#fbbf24; font-size:16px; font-weight:700;">${avg.toFixed(1)}</div>
+                        </div>
+                    `;
+                });
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
         }
     }
 
