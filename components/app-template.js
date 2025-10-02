@@ -195,7 +195,7 @@ export const createFederatedApp = (config) => {
     });
 
     // Create metrics panel
-    const metrics = createMetricsPanel({
+    const metricsPanel = createMetricsPanel({
         container: layout.metrics,
         metrics: [
             { id: 'metric-round', label: 'Federation Round' },
@@ -326,10 +326,10 @@ export const createFederatedApp = (config) => {
         const avgEpsilon = clients.reduce((sum, c) => 
             sum + c.agent.getEpsilon(), 0) / clients.length;
 
-        updateMetric(metrics['metric-round'], fedManager.getRound());
-        updateMetric(metrics['metric-states'], Math.floor(avgStates));
-        updateMetric(metrics['metric-episodes'], Math.floor(avgEpisodes));
-        updateMetric(metrics['metric-epsilon'], avgEpsilon, 'decimal');
+        updateMetric(metricsPanel['metric-round'], fedManager.getRound());
+        updateMetric(metricsPanel['metric-states'], Math.floor(avgStates));
+        updateMetric(metricsPanel['metric-episodes'], Math.floor(avgEpisodes));
+        updateMetric(metricsPanel['metric-epsilon'], avgEpsilon, 'decimal');
     };
 
     // Update client display
