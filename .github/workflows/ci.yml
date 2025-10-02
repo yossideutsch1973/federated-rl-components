@@ -32,11 +32,9 @@ jobs:
     
     - name: 🧪 Run test suite
       run: |
-        echo "Running full test suite..."
+        chmod +x ./test/run-tests.sh
         ./test/run-tests.sh --full
-        exit_code=$?
-        echo "Tests completed with exit code: $exit_code"
-        exit $exit_code
+      shell: bash
     
     - name: 📊 Test summary
       if: always()
