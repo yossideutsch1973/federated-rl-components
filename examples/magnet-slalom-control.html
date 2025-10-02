@@ -582,6 +582,15 @@
             // Federation
             autoFederate: false,
             federationInterval: 100,
+            visualizeTraining: true,
+            trainingDashboardOptions: {
+                metricDefinitions: {
+                    rewardAvg: { label: 'Reward', format: (v) => v.toFixed(1) },
+                    successRate: { label: 'Flags', format: (v) => `${(v * 100).toFixed(0)}%` },
+                    fps: { label: 'Viz FPS', format: (v) => v.toFixed(1) },
+                    episodes: { label: 'Episodes', format: (v) => v }
+                }
+            },
             
             // Environment
             environment,

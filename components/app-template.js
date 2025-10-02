@@ -14,6 +14,7 @@ import { createDashboardLayout, createClientGrid, createControlBar, createInput,
 import { MODES, createModeSwitcher, updateVisibility } from './mode-switcher.js';
 import { createInferenceAgent, runEvaluation, createInferenceUI, createResultsPanel, updateResults } from './inference-mode.js';
 import { createPersistenceManager } from './model-persistence.js';
+import { createTrainingDashboard } from './training-monitor.js';
 
 // ============================================================================
 // FEDERATED RL APP TEMPLATE
@@ -75,6 +76,8 @@ export const createFederatedApp = (config) => {
         onClientInit = null,
         onEpisodeEnd = null,
         onFederation = null,
+        visualizeTraining = false,
+        trainingDashboardOptions = {}
         
         // Metrics/KPIs configuration (optional)
         metrics = null
@@ -205,6 +208,23 @@ export const createFederatedApp = (config) => {
         ]
     });
 
+    const { heatmapLimit = 24, ...dashboardOverrides } = trainingDashboardOptions || {};
+    const defaultDashboardOptions = {
+        historySize: 300,
+        qTableShape: {
+            rows: heatmapLimit,
+            cols: environment.actions.length
+        }
+    };
+
+    let dashboardHost = null;
+    if (visualizeTraining) {
+        dashboardHost = document.createElement('div');
+        dashboardHost.id = 'training-dashboard';
+        dashboardHost.style.marginTop = '16px';
+        layout.metrics.appendChild(dashboardHost);
+    }
+
     // Create inference UI
     let inferenceUI = null;
     let resultsPanel = null;
@@ -251,6 +271,12 @@ export const createFederatedApp = (config) => {
     let animationId = null;
     let lastCheckpointTime = null;
 
+    const dashboard = visualizeTraining ? createTrainingDashboard({
+        container: dashboardHost || layout.metrics,
+        ...defaultDashboardOptions,
+        ...dashboardOverrides
+    }) : null;
+
     // Create federated manager
     const fedManager = createFederatedManager({
         federationInterval,
@@ -270,12 +296,12 @@ export const createFederatedApp = (config) => {
         layout.clients.innerHTML = '';
 
         // Create client grid
-        const clientElements = createClientGrid({
-            numClients: count,
-            canvasWidth,
-            canvasHeight,
-            container: layout.clients
-        });
+    const clientElements = createClientGrid({
+        numClients: count,
+        canvasWidth,
+        canvasHeight,
+        container: layout.clients
+    });
 
         // Initialize clients
         clients = clientElements.map((el, i) => {
@@ -315,6 +341,9 @@ export const createFederatedApp = (config) => {
         });
 
         updateGlobalMetrics();
+        if (dashboard) {
+            dashboard.reset();
+        }
     };
 
     // Update global metrics display
@@ -381,13 +410,25 @@ export const createFederatedApp = (config) => {
             if (onEpisodeEnd) {
                 onEpisodeEnd(client, completedEpisode);
             }
+
+            if (dashboard) {
+                dashboard.update({
+                    episode: client.metrics.episodeCount,
+                    reward: client.metrics.totalReward,
+                    successCount: completedEpisode.success ? 1 : 0,
+                    episodeCount: client.metrics.episodeCount,
+                    qValueAvg: 0,
+                    fps: 0,
+                    qMatrixUpdate: null
+                });
+            }
         }
         
         // Render if provided (throttled by renderInterval)
         if (render && frameCount % _renderInterval === 0) {
             render(client.ctx, client.state, client);
         }
-        
+
         updateClientDisplay(client);
     };
 
@@ -422,6 +463,7 @@ export const createFederatedApp = (config) => {
         const oldModel = clients[0]?.agent?.getModel() || {};
         
         // Perform federation
+        const clientModelsBefore = clients.map(c => c.agent.getModel());
         const globalModel = fedManager.federate(clients);
         
         // Compute model delta (convergence detection)
@@ -445,6 +487,16 @@ export const createFederatedApp = (config) => {
         showToast(delta.converged ? '✅ Federated (Converged)' : `🔄 Federated R${round}`, 
                   `${delta.statesChanged}/${delta.totalStates} states changed`);
         
+        if (dashboard) {
+            dashboard.markFederation({
+                round,
+                avgDelta: delta.avgDelta,
+                delta: { ...delta, round },
+                perClientModels: clientModelsBefore,
+                globalModel
+            });
+        }
+
         if (onFederation) {
             onFederation(globalModel, round, delta);
         }

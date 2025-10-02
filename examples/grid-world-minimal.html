@@ -27,6 +27,15 @@
             subtitle: '4 clients finding the goal',
             numClients: 4,
             autoFederate: true,
+            visualizeTraining: true,
+            trainingDashboardOptions: {
+                metricDefinitions: {
+                    rewardAvg: { label: 'Episode Reward', format: (v) => v.toFixed(1) },
+                    successRate: { label: 'Goal Rate', format: (v) => `${(v * 100).toFixed(0)}%` },
+                    fps: { label: 'FPS', format: (v) => v.toFixed(1) },
+                    episodes: { label: 'Episodes', format: (v) => v }
+                }
+            },
             
             environment: {
                 actions: ['UP', 'DOWN', 'LEFT', 'RIGHT'],

@@ -431,6 +431,17 @@
             
             autoFederate: false,
             federationInterval: 50,
+            visualizeTraining: true,
+            trainingDashboardOptions: {
+                updateInterval: 200,
+                historySize: 400,
+                metricDefinitions: {
+                    rewardAvg: { label: 'Reward', format: (v) => v.toFixed(1) },
+                    successRate: { label: 'Circle Success', format: (v) => `${(v * 100).toFixed(0)}%` },
+                    fps: { label: 'Viz FPS', format: (v) => v.toFixed(1) },
+                    episodes: { label: 'Episodes', format: (v) => v }
+                }
+            },
             
             environment,
             render,
