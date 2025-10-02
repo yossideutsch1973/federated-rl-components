@@ -30,11 +30,13 @@ jobs:
     - name: 🌐 Install Playwright browsers
       run: npx playwright install chromium --with-deps
     
-    - name: ⚡ Run fast tests (unit only)
-      run: ./test/run-tests.sh --fast
-    
-    - name: 🧪 Run full test suite
-      run: ./test/run-tests.sh --full
+    - name: 🧪 Run test suite
+      run: |
+        echo "Running full test suite..."
+        ./test/run-tests.sh --full
+        exit_code=$?
+        echo "Tests completed with exit code: $exit_code"
+        exit $exit_code
     
     - name: 📊 Test summary
       if: always()
