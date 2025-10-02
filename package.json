@@ -1,0 +1,19 @@
+{
+  "name": "federated-rl-tests",
+  "version": "1.0.0",
+  "description": "Federated RL component library with automated testing",
+  "type": "module",
+  "scripts": {
+    "test:fast": "./test/run-tests.sh --fast",
+    "test:full": "./test/run-tests.sh --full",
+    "test:e2e": "node test/e2e/validate-examples.js",
+    "install:hooks": "./test/install-hooks.sh"
+  },
+  "devDependencies": {
+    "playwright": "^1.40.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

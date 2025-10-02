@@ -26,8 +26,11 @@
 - **`test-agent-env.js`**: Agent learns to solve grid world
 - **`test-federation.js`**: Multi-client knowledge sharing
 
-### E2E Tests (1 file)
-- **`validate-examples.js`**: All HTML examples load correctly
+### E2E Tests (1 file, Playwright)
+- **`validate-examples.js`**: 
+  - Static HTML validation (all examples)
+  - Component file checks
+  - Browser smoke test (optional, informational)
 
 ## ⚡ Performance
 
@@ -92,7 +95,7 @@ runTests('MY MODULE', tests);
 
 **Fast feedback**: Unit tests run in <1s for rapid iteration
 
-**No dependencies**: Only Node.js required, no npm packages
+**Minimal dependencies**: Node.js + Playwright (for E2E only)
 
 **Single developer friendly**: Simple bash + JS, no complex tooling
 
