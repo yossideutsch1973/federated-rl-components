@@ -1,0 +1,14 @@
+#!/bin/bash
+# Fast tests before commit (unit tests only)
+
+echo "🔍 Running pre-commit checks..."
+./test/run-tests.sh --fast
+
+if [ $? -eq 0 ]; then
+    echo "✅ Pre-commit checks passed!"
+    exit 0
+else
+    echo "❌ Pre-commit checks failed. Please fix errors before committing."
+    exit 1
+fi
+

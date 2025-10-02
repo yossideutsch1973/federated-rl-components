@@ -1,0 +1,14 @@
+#!/bin/bash
+# Full test suite before push
+
+echo "🚀 Running pre-push validation..."
+./test/run-tests.sh --full
+
+if [ $? -eq 0 ]; then
+    echo "✅ Pre-push validation passed!"
+    exit 0
+else
+    echo "❌ Pre-push validation failed. Please fix errors before pushing."
+    exit 1
+fi
+

@@ -25,6 +25,23 @@ open http://localhost:8000/examples/rl-ball-catch-pure.html
 - 💾 **Model Persistence** (localStorage + file export)
 - 📊 **Real-time Metrics** with convergence tracking
 - 🎨 **Modern UI** with toast notifications
+- ✅ **CI/CD Pipeline** with automated testing (<10s)
+
+---
+
+## 🧪 Testing
+
+```bash
+# Run tests (fast unit tests ~1s, full suite ~5s)
+./test/run-tests.sh --fast
+./test/run-tests.sh --full
+
+# Install git hooks (auto-test on commit/push)
+./test/install-hooks.sh
+```
+
+**Coverage**: 40+ unit tests, integration tests, E2E validation  
+**Docs**: See [`test/README.md`](test/README.md) for details
 
 ---
 
