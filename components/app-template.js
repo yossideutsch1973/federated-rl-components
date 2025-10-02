@@ -77,7 +77,7 @@ export const createFederatedApp = (config) => {
         onEpisodeEnd = null,
         onFederation = null,
         visualizeTraining = false,
-        trainingDashboardOptions = {}
+        trainingDashboardOptions = {},
         
         // Metrics/KPIs configuration (optional)
         metrics = null
