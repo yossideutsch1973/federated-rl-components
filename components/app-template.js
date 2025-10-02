@@ -402,6 +402,9 @@ export const createFederatedApp = (config) => {
                 misses: client.state.misses || 0,
                 steps: client.state.steps || 0
             };
+            completedEpisode.success = typeof completedEpisode.catches === 'number'
+                ? completedEpisode.catches > 0
+                : completedEpisode.bounces > 0;
             
             // Pass old state to reset so cumulative stats can be preserved
             const oldState = client.state;
@@ -412,12 +415,20 @@ export const createFederatedApp = (config) => {
             }
 
             if (dashboard) {
+                const totalEpisodes = client.metrics.episodeCount || 1;
+                const success = completedEpisode && completedEpisode.success ? 1 : 0;
+                const qTableValues = Object.values(client.agent.getModel()).flat();
+                const qSum = qTableValues.reduce((sum, val) => sum + val, 0);
+                const qAvg = qTableValues.length ? qSum / qTableValues.length : 0;
+
                 dashboard.update({
                     episode: client.metrics.episodeCount,
                     reward: client.metrics.totalReward,
-                    successCount: completedEpisode.success ? 1 : 0,
-                    episodeCount: client.metrics.episodeCount,
-                    qValueAvg: 0,
+                    successCount: success,
+                    episodeCount: totalEpisodes,
+                    qValueAvg: qAvg,
+                    qValueMin: qTableValues.length ? Math.min(...qTableValues) : 0,
+                    qValueMax: qTableValues.length ? Math.max(...qTableValues) : 0,
                     fps: 0,
                     qMatrixUpdate: null
                 });
